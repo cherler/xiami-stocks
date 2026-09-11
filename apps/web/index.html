@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#edf2f4" />
+    <meta
+      name="description"
+      content="虾米看股：面向 A 股价值投资与中长期买卖的个人研究工作台"
+    />
+    <!-- 标题与图标跟主站各模块统一：`模块名｜虾米伙伴` + 虾米君 favicon。
+         不统一的话，用户在标签页里分不出这一页也是虾米伙伴的东西
+         —— 截图里两个标签并排放着，左边那个看起来像另一个网站。
+         favicon.svg 是从 tools-frontend/public 拷来的同一份，改形象要两边一起改。 -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>虾米看股｜虾米伙伴</title>
+  </head>
+  <body>
+    <!-- 外观引导脚本。**必须在 body 最前面、必须同步、必须不走 React。**
+
+         首屏那一帧只能由内联脚本决定：等 React 挂载才读的话，浏览器已经按系统
+         外观画完一帧了 —— 选了黑夜的人每翻一页先闪一下白，正好是他开这个功能
+         要躲的东西。
+
+         这段是 tools-frontend/lib/theme.ts 里 THEME_BOOT_SCRIPT 的拷贝
+         （子应用构建时拿不到主站的模块，所以各自内联一份）。**改那边要改这里。**
+         「随系统」= 不写这个属性，让 CSS 的 prefers-color-scheme 自己管；
+         写一个算出来的值进去等于拍快照，系统入夜自动转深色时页面反而不跟。 -->
+    <!-- ⚠️ **跟主站那份有一处有意的偏离，理由写在这里。**
+
+         主站的引导脚本在「随系统」时**不写属性**，让 CSS 的 prefers-color-scheme
+         自己管 —— 写一个算出来的值等于拍快照，系统入夜时页面反而不跟。
+
+         本仓做不到那样：它的深色是**属性驱动**的（29 条 `[data-theme="dark"]` 规则），
+         CSS 里没有一份 prefers-color-scheme 的实现。不写属性 = 系统深色下压根没有深色。
+         而复制一份 29 条规则的媒体查询，是手写第二份真源，迟早漂。
+
+         所以这里在「随系统」时解析一次，**并且 App 里挂着 matchMedia 监听**
+         （见 applyPrefs 旁边那段）：系统入夜时当场重解一次，快照问题不成立。
+         主站那条规矩守的是"别拍快照"，这里用另一种方式守住了同一件事。 -->
+    <script>
+      try {
+        var t = localStorage.getItem("xm-theme");
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "";
+        }
+        if (t) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

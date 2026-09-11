@@ -1,0 +1,35 @@
+// 测试文件跑在 Node 里（node:test + 原生 TS 剥离），用的是 node 的类型和
+// 带扩展名的相对导入 —— 这份 tsconfig 是给浏览器端配的，两边规则不同，
+// 一起检查会报「找不到 node:test」和「不能以 .ts 结尾」。所以排除掉。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [
+    "src",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
+}

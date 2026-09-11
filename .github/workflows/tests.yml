@@ -1,0 +1,70 @@
+# 两条通道都跑。**必须都跑**：今天为止有四个 bug 只在 PostgreSQL 上才炸
+# （INSERT OR REPLACE、row[0]、HAVING 引用别名、sqlite_master），
+# 全是上线之后靠读 sync_schedules.last_error 才发现的。
+#
+# **依赖装法用 `pip install -e .[dev]`，不要另写 requirements.txt。**
+# 第一版我另造了一份清单，结果 CI 只装了依赖、没装这个包本身 ——
+# 而 pythonpath 是配在 pyproject 的 [tool.pytest.ini_options] 里的，
+# 于是 conftest 一上来就 import 不到 stock_decision。
+# 仓里已经有唯一真源，再抄一份迟早会漂。
+name: tests
+
+# **只手动触发。** 原来挂在 push 上，每次推送两条通道各跑 9 分钟；
+# 一旦红了（不管是真 bug 还是 GitHub 自己的 runner 故障）就是一封邮件。
+# 实测被轰炸了一整天，其中一半的红根本不是代码问题——2026-08-06 晚上
+# GitHub 的托管 runner 池出故障，两个仓库的任务都卡满 15 分钟被判 cancelled。
+#
+# 保护还留着：需要在干净环境里验一遍时，去 Actions 页面点 Run workflow。
+# 之所以没有整个删掉，是因为有四个只在 PostgreSQL 上才炸的 bug 是靠它发现的
+# （INSERT OR REPLACE、row[0]、HAVING 引用别名、sqlite_master），
+# 那类 bug 在开发机上永远看不见。
+on:
+  workflow_dispatch:
+
+jobs:
+  postgres:
+    name: PostgreSQL（默认通道，行级安全真生效）
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16          # 跟线上 RDS 的大版本对齐，别让 CI 测的是另一个 PG
+        env:
+          POSTGRES_DB: xiamimate
+          POSTGRES_USER: xiamimate
+          POSTGRES_PASSWORD: xiamimate_dev
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xiamimate"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"    # 跟服务器一致：3.11 才有的写法（StrEnum）本地看不出来
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: 跑测试
+        env:
+          PG_HOST: 127.0.0.1
+          PG_PORT: "5433"
+          PG_DB: xiamimate
+          PG_USER: xiamimate
+          PG_PASSWORD: xiamimate_dev
+        # conftest 会自己建一个不绕过 RLS 的测试角色，隔离测试才有意义
+        run: pytest -q
+
+  sqlite:
+    name: SQLite（结构定义那条路仍要能跑）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - env:
+          STOCK_TEST_SQLITE: "1"
+        run: pytest -q

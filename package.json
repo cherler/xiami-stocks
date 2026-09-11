@@ -1,0 +1,26 @@
+{
+  "name": "xiamimate-stock-lab",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "dev:api": "./.venv/bin/uvicorn stock_decision.main:app --reload --app-dir apps/api --port 8108",
+    "dev:web": "npm run dev --workspace @xiamimate-stock-lab/web",
+    "build": "npm run build --workspace @xiamimate-stock-lab/web",
+    "lint": "npm run lint --workspace @xiamimate-stock-lab/web",
+    "test:web": "npm run test --workspace @xiamimate-stock-lab/web",
+    "sync:tokens": "node scripts/sync-brand-tokens.mjs",
+    "check:tokens": "node scripts/sync-brand-tokens.mjs --check",
+    "check:contrast": "node scripts/check-contrast.mjs",
+    "check:backends": "python scripts/check-backends.py"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "stock-sdk": "^2.4.1"
+  }
+}

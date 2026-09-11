@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiamimate-stock-lab-api"
+version = "0.1.0"
+description = "API for the Xiami Mate long-term stock decision desk"
+# 3.10 起可用：唯一的 3.11 依赖 StrEnum 已在 schemas.py 里做了回退（服务器是 3.10）
+requires-python = ">=3.10"
+dependencies = [
+  "akshare>=1.18,<2",
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "python-multipart>=0.0.20,<1",   # 交割单截图上传
+  # 长截图切片：见 ledger_scan._slice 的说明。
+  #
+  # **下限卡在 11.3 是安全线，不是随手写的。** 这个依赖解析的是用户上传的图片，
+  # 而 Pillow 历年的高危漏洞几乎全在解码器里：10.2 之前有 ImageMath 的任意代码执行
+  # （CVE-2023-50447），10.3 之前有 _imagingcms 的缓冲区溢出（CVE-2024-28219），
+  # 11.3 之前有 DDS 写入的堆溢出（CVE-2025-48379）。低于 11.3 的版本装不上是有意的。
+  #
+  # 上限卡在 13 是为了让下一个大版本先被人看一眼再进来；11.x/12.x 之间随便升。
+  "pillow>=11.3,<13",
+  "psycopg2-binary>=2.9,<3",       # PostgreSQL 后端（STOCK_DB_BACKEND=postgres）
+  # 公告正文抽取：见 disclosure.py 开头。纯 Python，不需要系统库。
+  #
+  # 跟 Pillow 一样，这个依赖解析的是外部来源的文件（巨潮下载的 PDF），
+  # 所以下限也卡在修完已知解析漏洞之后：6.x 之前有构造 PDF 触发的无限循环
+  # 与递归耗尽。上限卡在 7 让下个大版本先被人看一眼。
+  "pypdf>=6,<7",
+  # 表格结构。**纯 Python，没有系统依赖**（不需要 java/ghostscript，
+  # 不像 camelot/tabula）。年报的价值几乎全在表格里，而 pypdf 只给得出一段文字：
+  # 茅台 2026 半年报 11033 个单元格里 39% 是空的，纯文本抽取下它们直接消失，
+  # 列就错位了 —— 分不清「这一项是 0」和「这一项没有」，研究用途下这是硬伤。
+  "pdfplumber>=0.11,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  # **下限卡在 9.0.3 是安全线。** pip-audit 报 PYSEC-2026-1845 命中 8.4.2，
+  # 修复版本就是 9.0.3。9.x 跑过整套（671 通过），所以直接抬到大版本。
+  "pytest>=9.0.3,<10",
+]
+
+[tool.setuptools]
+package-dir = {"" = "apps/api"}
+
+[tool.setuptools.packages.find]
+where = ["apps/api"]
+
+[tool.pytest.ini_options]
+testpaths = ["apps/api/tests"]
+pythonpath = ["apps/api"]

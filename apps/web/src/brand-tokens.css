@@ -1,0 +1,81 @@
+/* 由 scripts/sync-brand-tokens.mjs 从虾米伙伴主站同步，勿手改。
+   真源：xiamimate-tools-frontend/app/brand-tokens.css
+   改动流程：改主站那一份 → 主站 npm run build → 本仓 npm run sync:tokens */
+/**
+ * 虾米伙伴的平台级设计令牌 —— 主站与各子应用（虾米看股…）共用的唯一真源。
+ *
+ * **只放真正必须一致的东西。** 品牌色、字号基准与缩放机制、字体族、圆角与控件高度：
+ * 这些一处不同，用户切模块时就会觉得"跳到别的网站了"。
+ *
+ * **不放各应用自己的配色。** 虾米看股是深色边栏 + 纸面色的研究台，主站是浅色平台页；
+ * 把 surface / ink 也统一，等于把两个产品压成一个，用户反而分不清自己在哪。
+ * 用户拍板的是「风格上保持一致」，不是「完全一样」。
+ *
+ * 变量一律带 `--xm-` 前缀：子应用各有各的 `--line`、`--blue`，不加前缀会互相覆盖
+ * （之前页眉制品直接导出 :root 就把子应用整站边框改掉过）。各应用把自己的
+ * 语义变量绑到这些前缀变量上，而不是反过来。
+ */
+:root {
+  /* ── 品牌 ── 主色青绿 #0c9488。
+   *
+   * **同一个色号不能既当色块又当小字。** 实测 #0c9488 对白只有 3.75:1 ——
+   * 这只够 AA 的"大字"档（≥24px 或 ≥18.7px 粗体），当 12px 说明文字或
+   * 白字按钮底都是不合格的。主站现在 `.pm-go`(12.5px)、`.pm-who`(12px)、
+   * `.btn-primary`(14px 白字) 三处正踩在这上面。
+   *
+   * 所以拆成两个：色块用 --xm-brand（够亮，是品牌该有的样子），
+   * 凡是承载文字的场合用 --xm-brand-ink（5.96:1，正文档 AA 通过）。 */
+  --xm-brand: #0c9488;             /* 色块、图标、边框、进度条 */
+  --xm-brand-ink: #097067;         /* 小字、链接，以及白字按钮的底 */
+  --xm-brand-strong: #075c55;      /* 悬停/按下 */
+  --xm-brand-soft: #e2f1ef;        /* 浅底：徽标、选中态背景 */
+  --xm-brand-line: rgba(12, 148, 136, 0.28);
+  --xm-on-brand: #ffffff;          /* --xm-brand-ink 底上的字 */
+
+  /* ── 字号 ──
+   * 基准 11px。中文界面里 11px 是密度与可读的平衡点，主站与本模块都从这里起步。
+   * 所有字号写成 calc(N * var(--xm-font-scale))，用户在偏好设置里调一个数就整站缩放，
+   * 而不是去改几百处硬编码的 px（本模块此前测出 234/320 处字号低于 11px 的教训）。 */
+  --xm-font-scale: 1;
+  --xm-fs-micro: calc(10px * var(--xm-font-scale));
+  --xm-fs-hint: calc(11px * var(--xm-font-scale));
+  --xm-fs-body: calc(13px * var(--xm-font-scale));
+  --xm-fs-label: calc(12px * var(--xm-font-scale));
+  --xm-fs-section: calc(15px * var(--xm-font-scale));
+  --xm-fs-title: calc(24px * var(--xm-font-scale));
+
+  /* ── 字体 ──
+   * 数字不用等宽：等宽是终端的语言，不是财务工具的。要的是表格数字对齐，
+   * 由 font-variant-numeric: tabular-nums 提供，与字体族无关。 */
+  --xm-font-sans: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --xm-font-num: var(--xm-font-sans);
+
+  /* ── 形状 ── */
+  --xm-radius-sm: 6px;
+  --xm-radius: 10px;
+  --xm-radius-lg: 14px;
+  --xm-ctl-h: calc(34px * var(--xm-font-scale));
+
+  /* ── 站点页眉的高度 ──
+   * **子应用必须知道这个数**：它们的侧边栏要 top 到它下面、主区高度是
+   * calc(100vh - 它)。此前各仓各自硬编码 68px（虾米看股就有四处），
+   * 于是主站改一次页眉高度，所有子应用同时错位——而错位的表现是
+   * 「侧边栏顶出屏幕」「页脚被顶到屏幕外」，看不出跟页眉有关。
+   *
+   * 真源仍是 globals.css 里 .topbar 的 height，这里跟它保持一致；
+   * 改动时两处一起改（chrome 制品从 globals.css 捞，令牌从这里同步）。 */
+  --xm-chrome-h: 52px;
+
+  /* ── 页眉/页脚的左右内边距 ──
+   * 4vw 是照主站与虾米跨境定的：它们是整页居中布局，页眉的 4vw 跟正文的
+   * 5vw 大致对齐，看着舒服。
+   *
+   * **但带侧边栏的子应用对不上。** 虾米看股左边有 248px 侧栏、自己的工具条
+   * 是 padding: 0 30px，而页眉是 4vw（1920 屏上 77px）——两条头左右差着
+   * 四十多像素，看着就是「页眉离两端太远」。
+   *
+   * 所以做成变量：**子应用在自己的 :root 里改一个数就行**，
+   * 不用去覆盖 .topbar / .site-footer 的选择器（那要跟制品的类名较劲，
+   * 而且下一个模块还得再来一遍——atlas 已经踩到了）。 */
+  --xm-chrome-pad-x: 4vw;
+}
