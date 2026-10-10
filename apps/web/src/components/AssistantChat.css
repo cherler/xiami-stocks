@@ -1,0 +1,46 @@
+/* A quiet research margin: existing paper, ink and deep teal, with no dashboard cards. */
+.sa-scrim { position: fixed; inset: 0; z-index: 180; background: rgb(20 32 42 / 12%); display: flex; justify-content: flex-end; }
+.sa-panel { width: min(490px, 100%); height: 100dvh; display: flex; flex-direction: column; background: var(--paper); border-left: 1px solid var(--line); box-shadow: -12px 0 40px rgb(20 32 42 / 9%); color: var(--ink); font-size: var(--fs-body); }
+.sa-header { display: grid; grid-template-columns: 1fr auto; padding: 22px 24px 17px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.sa-title { display: flex; align-items: center; gap: 10px; }
+.sa-title svg { color: var(--accent-text); }
+.sa-title h2 { font-size: 19px; font-weight: 600; line-height: 1.4; margin: 0; }
+.sa-header p { grid-column: 1 / -1; margin: 10px 0 0; display: flex; align-items: center; gap: 7px; font-size: var(--fs-meta); color: var(--ink-muted); }
+.sa-dot { height: 6px; width: 6px; border-radius: 50%; background: var(--ink-muted); }
+.sa-dot.is-ready { background: var(--accent-text); }
+.sa-conversation { flex: 1; overflow-y: auto; overscroll-behavior: contain; min-height: 80px; padding: 24px; }
+.sa-welcome { padding: 24px 0; }
+.sa-welcome h3 { font-size: 23px; letter-spacing: -.4px; font-weight: 600; margin: 0 0 12px; }
+.sa-welcome p, .sa-guide p { color: var(--ink-muted); line-height: 1.8; }
+.sa-examples { display: grid; gap: 0; margin: 25px 0; border-top: 1px solid var(--line); }
+.sa-examples .text-button { padding: 13px 0; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; line-height: 1.6; }
+.sa-welcome small, .sa-guide small, .sa-composer small { display: block; font-size: var(--fs-meta); line-height: 1.7; color: var(--ink-muted); }
+.sa-turn + .sa-turn { margin-top: 30px; }
+.sa-user { background: var(--surface-soft); padding: 13px 16px; border-radius: 8px 8px 2px 8px; margin-left: 28px; }
+.sa-user > span, .sa-answer > span { font-size: var(--fs-meta); color: var(--ink-muted); }
+.sa-user p, .sa-answer p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; }
+.sa-answer { padding-top: 19px; }
+.sa-answer > span { color: var(--accent-text); font-weight: 600; }
+.sa-answer .text-button { margin-top: 8px; }
+.sa-wait { color: var(--ink-muted); }
+.sa-error { margin: 0; padding: 10px 24px; background: var(--surface-soft); line-height: 1.6; }
+.sa-offline { padding: 10px 24px; border-top: 1px solid var(--line); }
+.sa-offline p { margin: 0 0 4px; line-height: 1.6; }
+.sa-composer { border-top: 1px solid var(--line); padding: 14px 24px 12px; flex-shrink: 0; }
+.sa-context { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; font-size: var(--fs-meta); color: var(--ink-muted); }
+.sa-composer form { position: relative; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
+.sa-composer form:focus-within { border-color: var(--accent-text); }
+.sa-composer textarea { width: 100%; display: block; resize: vertical; max-height: 180px; min-height: 92px; padding: 12px 49px 12px 12px; background: transparent; border: 0; border-radius: 9px; color: var(--ink); font: inherit; line-height: 1.7; outline: none; }
+.sa-send.page-action { position: absolute; bottom: 9px; right: 9px; padding: 7px; min-width: 32px; min-height: 32px; display: grid; place-items: center; border-radius: 7px; }
+.sa-composer small { margin-top: 6px; }
+.sa-footer { border-top: 1px solid var(--line); padding: 12px 24px; flex-shrink: 0; max-height: 45dvh; overflow-y: auto; }
+.sa-guide-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; font-weight: 400; }
+.sa-guide { font-size: var(--fs-meta); }
+.sa-guide ol { padding-left: 20px; }
+.sa-guide li { padding-bottom: 5px; }
+.sa-guide p { margin: 5px 0 12px; }
+.sa-guide a, .sa-guide > button { display: inline-flex; align-items: center; gap: 5px; margin: 5px 15px 10px 0; }
+.sa-panel :is(button, a, textarea):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; }
+@media (max-width: 600px) { .sa-header { padding: 18px 18px 12px; } .sa-conversation { padding: 18px; } .sa-composer { padding: 12px 18px; } .sa-footer { padding: 12px 18px; } }
+
+.sa-answer code { font-size: .95em; background: var(--surface-soft); padding: 1px 4px; border-radius: 3px; }

@@ -25,7 +25,7 @@ _default_path = Path(__file__).resolve().parents[3] / "var" / "stock_decision.db
 _database_path = Path(os.getenv("XIAMI_STOCK_DB", _default_path)).resolve()
 
 # 结构版本随每次表结构变更递增；备份文件会记录它，恢复时用于判断兼容性。
-SCHEMA_VERSION = 58
+SCHEMA_VERSION = 59
 
 
 def backend() -> str:
@@ -1796,6 +1796,21 @@ def _initialize_sqlite() -> None:
                 ON assistant_watch_runs(user_id, id DESC);
 
             -- 助理对话的动作和记忆：与正式研究共库，重启不丢，按用户隔离。
+            CREATE TABLE IF NOT EXISTS assistant_web_messages (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                content TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+                company_name TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'running',
+                answer TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_assistant_web_recent ON assistant_web_messages(user_id, created_at);
+
             CREATE TABLE IF NOT EXISTS assistant_actions (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL DEFAULT '__owner__',

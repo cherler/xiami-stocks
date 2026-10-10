@@ -51,17 +51,21 @@ class StockAssistantTool(Tool):
 
     async def execute(self, **kwargs):
         ctx = current_request_context()
-        if not ctx or not ctx.original_user_text or not ctx.sender_id or not ctx.message_id:
-            return "Error: 当前不是有身份和消息编号的用户对话，不能保存或确认；请在已绑定的飞书私聊里操作。"
+        if not ctx or not ctx.original_user_text or not ctx.sender_id:
+            return "Error: 当前不是有身份和消息编号的用户对话，不能保存或确认；请在虾米看股网页或已绑定的飞书私聊里操作。"
         try:
             config = json.loads(CONFIG.read_text())
-            if (ctx.channel != config["channel"] or ctx.chat_id != config["chat_id"]
-                    or ctx.sender_id not in config["sender_ids"]):
+            web = (ctx.channel == 'websocket' and config.get('web_enabled')
+                   and ctx.chat_id == config.get('web_chat_id') and ctx.sender_id == config.get('web_client_id'))
+            feishu = (ctx.channel == config.get('channel') and ctx.chat_id == config.get('chat_id')
+                      and ctx.sender_id in config.get('sender_ids', []))
+            message_id = ctx.metadata.get('webui_turn_id') if web else ctx.message_id
+            if not (web or feishu) or not message_id:
                 return "Error: 这段对话没有绑定到虾米看股。"
             envelope = {
                 "command": kwargs, "channel": ctx.channel, "chat_id": ctx.chat_id,
                 "sender_id": ctx.sender_id, "session_key": ctx.session_key or f"{ctx.channel}:{ctx.chat_id}",
-                "message_id": ctx.message_id, "original_text": ctx.original_user_text,
+                "message_id": message_id, "original_text": ctx.original_user_text,
                 "sent_at": int(time.time()),
             }
             raw = json.dumps(envelope, ensure_ascii=False).encode()

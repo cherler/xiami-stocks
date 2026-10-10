@@ -106,18 +106,14 @@ def configure_bridge(config: dict, binary: str) -> bool:
     """Bind to the already-paired single-owner Feishu chat. Never guess a second user."""
     path = NANOBOT_HOME / "stock-assistant-bridge.json"
     workspace = Path(config.get("agents", {}).get("defaults", {}).get("workspace", str(WORKSPACE))).expanduser()
+    approved, chats = [], set()
     try:
         pairing = json.loads((NANOBOT_HOME / "pairing.json").read_text())
         approved = pairing.get("approved", {}).get("feishu", [])
         triggers = json.loads((workspace / "triggers/triggers.json").read_text()).get("triggers", [])
+        chats = {t.get("chatId") for t in triggers if t.get("enabled") and t.get("channel") == "feishu" and t.get("chatId")}
     except (OSError, ValueError):
-        print("助理写入尚未启用：先完成飞书配对与私聊提醒路由，再运行 setup。")
-        return False
-    routes = [t for t in triggers if t.get("enabled") and t.get("channel") == "feishu"]
-    chats = {t.get("chatId") for t in routes if t.get("chatId")}
-    if len(approved) != 1 or len(chats) != 1:
-        print("助理写入尚未启用：需要唯一的已配对用户与私人飞书路由，不能自动选择多人中的一个。")
-        return False
+        pass
     current = json.loads(path.read_text()) if path.exists() else {}
     launcher = Path(binary).resolve().read_text().splitlines()[0]
     interpreter = launcher[2:] if launcher.startswith("#!/") else ""
@@ -134,12 +130,22 @@ def configure_bridge(config: dict, binary: str) -> bool:
         print("助理适配器安装失败，现有配置未改；检查 uv 安装环境。")
         return False
     current.update({"secret": current.get("secret") or secrets.token_hex(32),
-                    "api_base": "http://127.0.0.1:8108", "channel": "feishu",
-                    "chat_id": next(iter(chats)), "sender_ids": approved,
+                    "api_base": "http://127.0.0.1:8108", "web_enabled": True,
+                    "web_client_id": current.get("web_client_id") or "stock-" + secrets.token_hex(16),
+                    "web_chat_id": current.get("web_chat_id") or "stock-" + secrets.token_hex(12),
                     "workspace": str(workspace), "nanobot_python": interpreter})
-    path.write_text(json.dumps(current, ensure_ascii=False, indent=2))
-    path.chmod(0o600)
-    print("✓ 助理写入已绑定到已有的私人飞书会话，密钥未输出")
+    if len(approved) == 1 and len(chats) == 1:
+        current.update(channel="feishu", chat_id=next(iter(chats)), sender_ids=approved)
+    websocket = config.setdefault("channels", {}).setdefault("websocket", {})
+    allowed = websocket.get("allowFrom", [])
+    if allowed and "*" not in allowed and current["web_client_id"] not in allowed:
+        websocket["allowFrom"] = [*allowed, current["web_client_id"]]
+    import os
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(json.dumps(current, ensure_ascii=False, indent=2))
+    print("✓ 网页助手已接通，飞书绑定状态会在网页显示；密钥未输出")
     return True
 
 
@@ -152,6 +158,8 @@ def main() -> None:
     CONFIG.chmod(0o600)
     install_workspace_files()
     configure_bridge(config, binary)
+    CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    CONFIG.chmod(0o600)
     feishu = (config.get("channels") or {}).get("feishu") or {}
     print("✓ nanobot 已配好：MiniMax-M3、虾米看股工具、执行命令和读写文件已关")
     instances = feishu.get("instances", [feishu])

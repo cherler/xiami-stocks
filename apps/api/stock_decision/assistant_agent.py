@@ -71,11 +71,22 @@ def verify_request(raw: bytes, signature: str) -> Envelope:
     envelope = Envelope.model_validate_json(raw)
     if abs(time.time() - envelope.sent_at) > 90:
         raise AgentError("请求已过期，请重试。")
-    if (envelope.channel != config.get("channel") or envelope.chat_id != config.get("chat_id")
-            or envelope.sender_id not in config.get("sender_ids", [])):
-        raise AgentError("这段对话没有绑定到看股助手。")
     if access.current_scope() != access.OWNER_SCOPE:
         raise AgentError("当前连接只供已绑定的私人助理使用。")
+    if envelope.channel == 'websocket':
+        if (not config.get('web_enabled') or envelope.sender_id != config.get('web_client_id')
+                or envelope.chat_id != config.get('web_chat_id')):
+            raise AgentError("网页助手身份未验证。")
+        with connection() as conn:
+            row = conn.execute("SELECT content,prompt,state FROM assistant_web_messages WHERE id=? AND user_id=?",
+                               (envelope.message_id, access.current_scope())).fetchone()
+        if not row or row['prompt'] != envelope.original_text or row['state'] != 'running':
+            raise AgentError("找不到对应的正在处理的网页消息，不能代替用户操作。")
+        # Confirmation uses the actual user text, not the company context prepended by the server.
+        envelope = envelope.model_copy(update={'original_text':row['content']})
+    elif (envelope.channel != config.get("channel") or envelope.chat_id != config.get("chat_id")
+            or envelope.sender_id not in config.get("sender_ids", [])):
+        raise AgentError("这段对话没有绑定到看股助手。")
     return envelope
 
 
@@ -161,7 +172,7 @@ def _report(conn, company: dict, title: str, text: str, original: str, kind: str
     title = title.strip() or f"{company['name']} · {'导入研究' if kind == 'report' else '随手记'}"
     report_id = int(conn.execute("""INSERT INTO research_reports
         (company_id, version, title, body, model, created_at) VALUES (?, ?, ?, ?, ?, ?)""",
-        (company["id"], version, title, body, "飞书助理 · 个人记录", now_iso())).lastrowid)
+        (company["id"], version, title, body, "看股助手 · 个人记录", now_iso())).lastrowid)
     return report_id, hashlib.sha256(body.encode()).hexdigest()
 
 

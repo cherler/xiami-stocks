@@ -1,6 +1,6 @@
 # 虾米看股私人助理
 
-飞书是日常入口，nanobot 理解自然语言，虾米看股保存研究、计算规则和检查变化。
+网页右上角“问助手”和飞书都是入口，nanobot 理解自然语言，虾米看股保存研究、计算规则和检查变化。
 用户不用学“看、记、盯、核”口令，也不用把聊天结果重新填进网页。
 
 ## 第一版能做什么
@@ -20,6 +20,27 @@
 第一次对比会建立基线，不会声称“没有变化”。研究跟踪以已经同步进股票库的数据为准，
 当前推送的是“新资料 + 原关注点”，不自动判定投资逻辑成立或失效。
 粘贴报告正文可以保存；图片/文件的完整识别与自动导入不在本次实现范围。
+
+## 网页使用
+
+右上角 **问助手** 打开聊天侧栏，不需要跳出正在看的页面。
+在公司档案里打开，会自动带上当前公司，也可以点“清除”。用户明确说出的公司优先。
+
+- 消息在服务端保存。关闭侧栏后处理继续，重新打开可看结果；最近 60 条在网页展示。
+- 保存研究后显示实际回执和“查看公司记录”，公司资料随之更新；原有飞书记录继续可读。
+- 断线会显示结果尚未确认，避免把已经执行的写入当成没发生而自动重做。
+- 下方“连接飞书 / 接入与帮助”展开三步引导：打开 nanobot 管理页扫码连接、批准私聊配对，
+  在机器人私聊发送 `/trigger 虾米看股到价提醒`，回网页点“完成飞书绑定”。
+  只接受唯一的已批准用户与路由，不自动替换已有的不同绑定；已有绑定无需重新扫码。
+- 网页展示网页消息，飞书展示飞书消息；两边共用助手及股票研究数据，不承诺镜像显示两边全部聊天记录。
+
+这版供本机主人使用。多人网站的其他用户不能调用站主的模型或读取私人聊天。
+本机运行虾米看股和助手后可用；安装只需做一次，不需要在网页填写模型密钥。
+
+网页 API 通过 `web_chat.py` 调用现有 nanobot WebUI WebSocket，不修改上游。
+API 持有连接身份与令牌，浏览器只拿消息和状态；可信写入另核验数据库中的原始消息。
+`assistant_web_messages` 有用户域过滤与 PostgreSQL RLS。原话、公司背景、回复、失败状态和动作回执分别保存。
+网关中断或 API 重启后的长任务不会自动重放；过期未完成记录会标成中断，需要先核对写入回执。
 
 ## 架构
 
@@ -47,8 +68,8 @@ python3 apps/assistant/setup.py
 ```
 
 安装器配置模型与 MCP、关闭 shell/任意文件/CLI 工具、更新工作区规则；
-已有唯一的飞书配对用户和私聊路由时，自动将 `bridge/` 安装到 nanobot 独立 Python 环境，
-并创建权限 0600 的 `~/.nanobot/stock-assistant-bridge.json`。
+安装器将 `bridge/` 安装到 nanobot 独立 Python 环境，先接通网页；
+已有唯一的飞书配对用户和私聊路由时，同时保留飞书绑定。创建权限 0600 的 `~/.nanobot/stock-assistant-bridge.json`。
 其中签名密钥和用户绑定不进仓库，不会打印。多用户/多私聊不自动猜选。
 
 首次接入先完成飞书配对和路由，再运行一次安装器：
@@ -84,7 +105,7 @@ launchctl kickstart -k gui/$(id -u)/com.xiamimate.stock-assistant
 
 - 随手记是个人研究记录，不擅自变成正式交易规则；偏好也不覆盖计划和持仓。
 - 成交草稿15分钟有效；新草稿使旧草稿失效；确认前计划被网页修改，要求重新核对。
-- 只有绑定私聊里的真实用户消息能确认，触发器/其他人/CLI 的工具调用不能代确认。
+- 绑定私聊、主人网页里的真实用户消息才能确认；触发器、其他人、CLI 和模型不能代确认。
 - 成交登记与撤销只影响 `decision_fills`，不下单、不改持仓。
 - 到价回差避免门槛附近反复提醒。同一轮同一公司的研究与自定义价格提醒合并。
 - 暂停或改价会移除尚未发送的旧提醒；同条消息内其他有效跟踪保留。已交给飞书发送的消息无法撤回。
@@ -94,8 +115,8 @@ launchctl kickstart -k gui/$(id -u)/com.xiamimate.stock-assistant
 ## 验证
 
 ```sh
-.venv/bin/python -m pytest apps/api/tests/test_assistant_agent.py apps/api/tests/test_assistant.py apps/api/tests/test_assistant_research.py apps/api/tests/test_decision_board_order.py -q
-STOCK_TEST_SQLITE=1 .venv/bin/python -m pytest apps/api/tests/test_assistant_agent.py apps/api/tests/test_assistant.py apps/api/tests/test_assistant_research.py -q
+.venv/bin/python -m pytest apps/api/tests/test_assistant_web.py apps/api/tests/test_assistant_agent.py apps/api/tests/test_assistant.py apps/api/tests/test_assistant_research.py apps/api/tests/test_decision_board_order.py -q
+STOCK_TEST_SQLITE=1 .venv/bin/python -m pytest apps/api/tests/test_assistant_web.py apps/api/tests/test_assistant_agent.py apps/api/tests/test_assistant.py apps/api/tests/test_assistant_research.py -q
 ```
 
 适配器和投递测试（用 nanobot 环境的 Python；不发送真实飞书消息）：

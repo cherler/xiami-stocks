@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import access, assistant, assistant_agent, assistant_research, llm
+from . import access, assistant, assistant_agent, assistant_web, assistant_research, llm
 from .database import integrity_errors
 from .llm import credit_state
 from .database import database_path, initialize_database
@@ -3229,6 +3229,30 @@ def post_evaluate_triggers() -> dict:
 def get_assistant_my_stocks() -> list[dict]:
     """「你的票」：观察池 / 候选池、有决策卡的、写过逻辑的、持有的，四个清单的并集。"""
     return assistant.my_stocks()
+
+
+@app.post("/api/v1/assistant/web/connect-feishu")
+async def assistant_web_connect_feishu(request: Request):
+    assistant_web.guard(request, write=True)
+    return await assistant_web.connect_feishu()
+
+
+@app.get("/api/v1/assistant/web/status")
+async def assistant_web_status(request: Request) -> dict:
+    assistant_web.guard(request)
+    return await assistant_web.status()
+
+
+@app.get("/api/v1/assistant/web/messages")
+def assistant_web_history(request: Request) -> list[dict]:
+    assistant_web.guard(request)
+    return assistant_web.history()
+
+
+@app.post("/api/v1/assistant/web/messages", status_code=202)
+async def assistant_web_send(request: Request, payload: assistant_web.ChatInput) -> dict:
+    assistant_web.guard(request, write=True)
+    return await assistant_web.submit(payload)
 
 
 @app.post("/api/v1/assistant/command")

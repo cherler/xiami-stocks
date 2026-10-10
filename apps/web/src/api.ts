@@ -1909,3 +1909,26 @@ export function narrateRally(companyId: number, window = 20): Promise<RallyView>
   return apiFetch<RallyView>(
     `/api/v1/companies/${companyId}/rally/narrate?window=${window}`, { method: "POST" });
 }
+
+
+export interface AssistantWebStatus {
+  ready: boolean; configured: boolean; feishu_bound: boolean;
+  settings_url: string | null; message: string;
+  guide: { title: string; done: boolean; text: string }[];
+}
+export interface AssistantChatMessage {
+  id: string; content: string; company_id: number | null; company_name: string;
+  state: "running" | "done" | "interrupted"; answer: string; error: string;
+  created_at: string; updated_at: string;
+  actions: { operation: string; company_id: number | null; record_id?: string; url?: string }[];
+}
+export const getAssistantWebStatus = () => apiFetch<AssistantWebStatus>("/api/v1/assistant/web/status");
+export const getAssistantMessages = () => apiFetch<AssistantChatMessage[]>("/api/v1/assistant/web/messages");
+export const sendAssistantMessage = (payload: { id: string; text: string; company_id: number | null }) =>
+  apiFetch<{ id: string }>("/api/v1/assistant/web/messages", {
+    method: "POST", headers: { "X-Stock-Chat": "1" }, body: JSON.stringify(payload),
+  });
+
+export const connectAssistantFeishu = () => apiFetch<AssistantWebStatus>("/api/v1/assistant/web/connect-feishu", {
+  method: "POST", headers: { "X-Stock-Chat": "1" },
+});

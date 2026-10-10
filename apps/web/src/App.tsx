@@ -31,6 +31,7 @@ import {
   Link2,
   ListTodo,
   Menu,
+  MessageCircle,
   Plus,
   Wallet,
   Search,
@@ -334,6 +335,7 @@ const GrowthChart = lazy(() => import("./components/GrowthChart").then((m) => ({
 
 // 我的判断新增的三页。**都走 lazy**：它们各自带着一套判据表与图，
 // 而大多数会话里一页都不会打开。
+const AssistantChat = lazy(() => import("./components/AssistantChat"));
 const DecisionLoop = lazy(() => import("./components/DecisionLoop").then((m) => ({ default: m.DecisionLoop })));
 const SwingLab = lazy(() => import("./components/SwingLab").then((m) => ({ default: m.SwingLab })));
 const RallyType = lazy(() => import("./components/RallyType").then((m) => ({ default: m.RallyType })));
@@ -2100,8 +2102,8 @@ function BusinessRelationshipClues({ fixedCompanyId }: { fixedCompanyId?: number
  *
  * `fixedCompanyId` 一给，就只显示这家公司的报告，也不再问"给哪家生成"。
  */
-function ReportsPage({ onOpenCompany, fixedCompanyId }: {
-  onOpenCompany: (id: number) => void; fixedCompanyId?: number;
+function ReportsPage({ onOpenCompany, fixedCompanyId, refreshVersion = 0 }: {
+  onOpenCompany: (id: number) => void; fixedCompanyId?: number; refreshVersion?: number;
 }) {
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [reports, setReports] = useState<ResearchReport[]>([]);
@@ -2111,7 +2113,7 @@ function ReportsPage({ onOpenCompany, fixedCompanyId }: {
 
   async function reload() {
     try {
-      const [list, rows] = await Promise.all([getCompanies(), getReports()]);
+      const [list, rows] = await Promise.all([getCompanies(), getReports(fixedCompanyId)]);
       setCompanies(list);
       // 并进公司页时只留这家公司的报告——别的公司的报告出现在这家的档案里是错的
       setReports(fixedCompanyId === undefined ? rows : rows.filter((r) => r.company_id === fixedCompanyId));
@@ -2120,7 +2122,13 @@ function ReportsPage({ onOpenCompany, fixedCompanyId }: {
     }
     catch (caught) { setError(errorMessage(caught)); }
   }
-  useEffect(() => { void reload(); }, []);
+  useEffect(() => { void reload(); }, [fixedCompanyId, refreshVersion]);
+  const reportAnchor = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("do") === "assistant-record") {
+      reportAnchor.current?.scrollIntoView({ block: "start" });
+    }
+  }, [fixedCompanyId, refreshVersion, reports.length]);
 
   const [job, setJob] = useState<BackgroundJob | null>(null);
   const running = job !== null && (job.status === "运行中" || job.status === "排队中");
@@ -2179,7 +2187,7 @@ function ReportsPage({ onOpenCompany, fixedCompanyId }: {
     {job && <p className={job.status === "失败" || job.status === "已中断" ? "form-error" : "restore-message"}>
       {running ? `${job.label} · 后台运行中` : job.status === "已完成" ? `${job.note}${jobCostText(job) ? `　${jobCostText(job)}` : ""}` : `${job.status}：${job.error || job.note}`}
     </p>}
-    <section className="panel reports-panel--compact">
+    <section className="panel reports-panel--compact" ref={reportAnchor}>
       <div className="chart-toolbar">
         {fixedCompanyId === undefined
           ? <label className="sync-interval">给哪家生成
@@ -3280,7 +3288,7 @@ function tabFromSearch(): DetailTab {
 
 // onOpenCompany 去掉了：它以前只传给同业对照，而那张表现在比的是全市场同行，
 // 绝大多数并不在研究池里，点开也没有档案可看。
-function CompanyDetailPage({ companyId, onBack, onArchiveChanged }: { companyId: number; onBack: () => void; onArchiveChanged: () => Promise<void> }) {
+function CompanyDetailPage({ companyId, onBack, onArchiveChanged, assistantRevision }: { companyId: number; onBack: () => void; onArchiveChanged: () => Promise<void>; assistantRevision: number }) {
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [marketRefreshing, setMarketRefreshing] = useState(false);
@@ -3309,6 +3317,13 @@ function CompanyDetailPage({ companyId, onBack, onArchiveChanged }: { companyId:
   }, []);
   async function refresh() { setLoading(true); try { setCompany(await getCompany(companyId)); setError(""); } catch (caught) { setError(errorMessage(caught)); } finally { setLoading(false); } }
   useEffect(() => { void refresh(); }, [companyId]);
+  useEffect(() => {
+    if (!assistantRevision) return;
+    let active = true;
+    void getCompany(companyId).then(value => { if (active) setCompany(value); })
+      .catch(caught => { if (active) setError(errorMessage(caught)); });
+    return () => { active = false; };
+  }, [companyId, assistantRevision]);
   async function saved() { await refresh(); await onArchiveChanged(); }
   async function refreshHistory() { setMarketRefreshing(true); try { await refreshCompanyMarketHistory(companyId); await refresh(); } catch (caught) { setError(errorMessage(caught)); } finally { setMarketRefreshing(false); } }
   async function refreshProfile() { setProfileRefreshing(true); try { await refreshCompanyProfile(companyId); await refresh(); } catch (caught) { setError(errorMessage(caught)); } finally { setProfileRefreshing(false); } }
@@ -3515,7 +3530,7 @@ function CompanyDetailPage({ companyId, onBack, onArchiveChanged }: { companyId:
           <Documents companyId={company.id} />
         </Suspense>
       </section></>}
-    {tab === "chain" && <><Suspense fallback={<div className="empty-state">正在读取链上位置…</div>}><CompanyChainPositions companyId={company.id} /></Suspense><BusinessRelationshipClues fixedCompanyId={company.id} /><ReportsPage fixedCompanyId={company.id} onOpenCompany={() => undefined} /></>}
+    {tab === "chain" && <>{new URLSearchParams(window.location.search).get("do") === "assistant-record" && <ReportsPage refreshVersion={assistantRevision} fixedCompanyId={company.id} onOpenCompany={() => undefined} />}<Suspense fallback={<div className="empty-state">正在读取链上位置…</div>}><CompanyChainPositions companyId={company.id} /></Suspense><BusinessRelationshipClues fixedCompanyId={company.id} />{new URLSearchParams(window.location.search).get("do") !== "assistant-record" && <ReportsPage refreshVersion={assistantRevision} fixedCompanyId={company.id} onOpenCompany={() => undefined} />}</>}
   </>;
 }
 
@@ -7419,6 +7434,9 @@ applyPrefs(readPrefs());
 export default function App() {
   const initialRoute = routeFromPathname();
   const [marketError, setMarketError] = useState("");
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantRevision, setAssistantRevision] = useState(0);
+  const closeAssistant = useCallback(() => setAssistantOpen(false), []);
   const [dashboard, setDashboard] = useState(emptyDashboard); const [dataSource, setDataSource] = useState<"loading" | "api" | "error">("loading"); const [sidebarOpen, setSidebarOpen] = useState(false); const [sidebarCollapsed, setSidebarCollapsed] = useState(false); const [page, setPage] = useState<Page>(initialRoute.page); const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(initialRoute.companyId); const [showCreate, setShowCreate] = useState(false); const [marketRefreshing, setMarketRefreshing] = useState(false);
   // 写判断的浮层。**挂在最外层**：从哪一页想起来的都能开，关掉回到原地。
   const [writing, setWriting] = useState<{ open: boolean; symbol?: string } | null>(null);
@@ -7509,7 +7527,7 @@ export default function App() {
     catch (caught) { setMarketError(errorMessage(caught)); }
     finally { setMarketRefreshing(false); }
   }
-  return <><PlatformHeader /><div className={`app-shell${sidebarCollapsed ? " app-shell--collapsed" : ""}`}><Sidebar open={sidebarOpen} page={page} reviewCount={dashboard.counter_hits} dataSource={dataSource} onClose={() => { setSidebarOpen(false); setSidebarCollapsed(true); }} onNavigate={navigate} /><main className="main-content"><header className="topbar"><button className="icon-button menu-button" aria-label="打开导航" onClick={() => { setSidebarOpen(true); setSidebarCollapsed(false); }}><Menu size={20} /></button><GlobalSearch onOpenCompany={openCompany} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} /><div className="topbar-actions">
+  return <><PlatformHeader /><div className={`app-shell${sidebarCollapsed ? " app-shell--collapsed" : ""}`}><Sidebar open={sidebarOpen} page={page} reviewCount={dashboard.counter_hits} dataSource={dataSource} onClose={() => { setSidebarOpen(false); setSidebarCollapsed(true); }} onNavigate={navigate} /><main className="main-content"><header className="topbar"><button className="icon-button menu-button" aria-label="打开导航" onClick={() => { setSidebarOpen(true); setSidebarCollapsed(false); }}><Menu size={20} /></button><GlobalSearch onOpenCompany={openCompany} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} /><div className="topbar-actions"><button type="button" className="secondary-action sa-entry" onClick={() => setAssistantOpen(true)}><MessageCircle size={17}/>问助手</button>
         {/* **常驻。** 这个按钮要对付的不是"字段多"，是"路太长"——
             一闪而过的念头撑不到"先建档、等同步、走到某个页签"那么远。 */}
         <button className="page-action topbar-write" onClick={() => setWriting({ open: true })}>
@@ -7523,8 +7541,8 @@ export default function App() {
             远好过"最要紧的提醒在首页看不见"。
             （原注：Headline 当初就是把这条横幅和反方入口合并成一块放到第一屏的，
           再挂一条细横幅是同一件事说两遍。其余页面照旧跟着换页。 */}
-        {<Suspense fallback={null}><CounterHitBanner onOpenCompany={openCompany} /></Suspense>}{page === "dashboard" && <DashboardPage dashboard={dashboard} onOpenCompany={openCompany} onCreate={openCreate} onStartJudgment={startFirstJudgment} onRefreshMarket={() => void syncMarket()} refreshing={marketRefreshing} marketError={marketError} onNavigate={navigate} />}{page === "review" && <ReviewPage dashboard={dashboard} onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "companies" && <CompaniesPage showCreate={showCreate} onOpenCompany={openCompany} onCloseCreate={() => setShowCreate((value) => !value)} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} />}{page === "company" && selectedCompanyId !== null && <CompanyDetailPage companyId={selectedCompanyId} onBack={() => navigate("companies")} onArchiveChanged={refreshDashboard} />}{page === "portfolio" && <PortfolioPage onOpenCompany={openCompany} onLedgerChanged={refreshDashboard} />}{page === "reviews" && <ReviewsPage onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "industries" && <IndustriesPage onOpenCompany={openCompany} />}{page === "screener" && <ScreenerPage onWrite={(symbol) => setWriting({ open: true, symbol })} />}{page === "heatmap" && <HeatmapPage onOpenCompany={openCompany} />}{page === "methods" && <MethodsPage onOpenCompany={openCompany} />}{page === "docs" && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">读文档</span><PanelTitle hint="每个结论都带页码，能翻回原文核。">年报、公告、研报，读进来问它</PanelTitle></div></div><Suspense fallback={<div className="empty-state">正在加载…</div>}><Documents /></Suspense></section>}
-      {page === "loop" && <Suspense fallback={<div className="empty-state page-loading">正在打开我的跟踪…</div>}><DecisionLoop onOpenCompany={openCompany} onOpenPortfolio={() => navigate("portfolio")} /></Suspense>}
+        {<Suspense fallback={null}><CounterHitBanner onOpenCompany={openCompany} /></Suspense>}{page === "dashboard" && <DashboardPage dashboard={dashboard} onOpenCompany={openCompany} onCreate={openCreate} onStartJudgment={startFirstJudgment} onRefreshMarket={() => void syncMarket()} refreshing={marketRefreshing} marketError={marketError} onNavigate={navigate} />}{page === "review" && <ReviewPage dashboard={dashboard} onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "companies" && <CompaniesPage showCreate={showCreate} onOpenCompany={openCompany} onCloseCreate={() => setShowCreate((value) => !value)} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} />}{page === "company" && selectedCompanyId !== null && <CompanyDetailPage assistantRevision={assistantRevision} companyId={selectedCompanyId} onBack={() => navigate("companies")} onArchiveChanged={refreshDashboard} />}{page === "portfolio" && <PortfolioPage onOpenCompany={openCompany} onLedgerChanged={refreshDashboard} />}{page === "reviews" && <ReviewsPage onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "industries" && <IndustriesPage onOpenCompany={openCompany} />}{page === "screener" && <ScreenerPage onWrite={(symbol) => setWriting({ open: true, symbol })} />}{page === "heatmap" && <HeatmapPage onOpenCompany={openCompany} />}{page === "methods" && <MethodsPage onOpenCompany={openCompany} />}{page === "docs" && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">读文档</span><PanelTitle hint="每个结论都带页码，能翻回原文核。">年报、公告、研报，读进来问它</PanelTitle></div></div><Suspense fallback={<div className="empty-state">正在加载…</div>}><Documents /></Suspense></section>}
+      {page === "loop" && <Suspense fallback={<div className="empty-state page-loading">正在打开我的跟踪…</div>}><DecisionLoop key={assistantRevision} onOpenCompany={openCompany} onOpenPortfolio={() => navigate("portfolio")} /></Suspense>}
       {page === "swing" && <Suspense fallback={<div className="empty-state page-loading">正在打开做 T 回测…</div>}><SwingLab onOpenCompany={openCompany} /></Suspense>}
       {page === "rally" && <Suspense fallback={<div className="empty-state page-loading">正在打开涨跌归因…</div>}><RallyType onOpenCompany={openCompany} /></Suspense>}
       {page === "news" && <NewsPageView onOpenCompany={openCompany} />}
@@ -7537,5 +7555,10 @@ export default function App() {
         <QuickThesis symbol={writing.symbol} onClose={() => setWriting(null)}
                      onDone={(companyId) => { setWriting(null); void refreshDashboard(); openCompany(companyId); }} />
       </Suspense>
-    </div>}<ConfirmHost /><PlatformFooter /></>;
+    </div>}{assistantOpen && <Suspense fallback={null}><AssistantChat companyId={page === "company" ? selectedCompanyId : null} onClose={closeAssistant} onOpenCompany={id => {
+        openCompany(id, "chain", "assistant-record");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+        setAssistantRevision(v => v + 1);
+        closeAssistant();
+      }} onChanged={() => { setAssistantRevision(v => v + 1); void refreshDashboard(); }}/></Suspense>}<ConfirmHost /><PlatformFooter /></>;
 }

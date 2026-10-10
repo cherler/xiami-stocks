@@ -8365,3 +8365,6 @@ a.inbox-title { color: var(--accent-text); }
 /* 边填边显示偏离——**成交之后再算就晚了**，那时你已经买完了。 */
 .dl-fill-drift { flex-basis: 100%; margin: 0; font-size: var(--fs-small); color: var(--ink-body); }
 .dl-fill-note { margin: 10px 0 0; font-size: var(--fs-small); line-height: 1.7; color: var(--ink-soft); }
+
+/* Always visible, even before the chat panel is lazy-loaded. */
+.sa-entry { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }

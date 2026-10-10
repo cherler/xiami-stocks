@@ -33,6 +33,20 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(sent[0]['original_text'], '先不要确认')
             self.assertEqual(sent[0]['sender_id'], 'user')
 
+    def test_web_uses_trusted_turn_id_not_model_message_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'config.json'
+            path.write_text(json.dumps({'secret':'test', 'api_base':'http://localhost', 'web_enabled':True,
+                                        'web_client_id':'web-client', 'web_chat_id':'web-chat'}))
+            ctx = RequestContext(channel='websocket', chat_id='web-chat', sender_id='web-client',
+                session_key='session', original_user_text='当前公司：工业富联。用户原话：先不确认',
+                metadata={'webui_turn_id':'actual-turn'})
+            sent=[]
+            with patch.object(bridge,'CONFIG',path), patch.object(bridge,'_post',lambda api,raw,sig: sent.append(json.loads(raw)) or '{}'), request_context(ctx):
+                asyncio.run(bridge.StockAssistantTool().execute(operation='context'))
+            self.assertEqual(sent[0]['message_id'],'actual-turn')
+            self.assertIn('先不确认',sent[0]['original_text'])
+
     def test_unbound_user_and_automation_cannot_write(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'config.json'

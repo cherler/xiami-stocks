@@ -152,7 +152,7 @@ def _my_sources(conn) -> tuple[dict[int, set[str]], dict[int, dict[str, Any]]]:
         f"SELECT company_id FROM assistant_subscriptions WHERE enabled = 1{_sw()}").fetchall()], "主动跟踪")
     add([row["company_id"] for row in conn.execute(
         f"""SELECT DISTINCT r.company_id FROM research_reports r JOIN companies c ON c.id = r.company_id
-            WHERE r.model = '飞书助理 · 个人记录'{_sw('c')}""").fetchall()], "随手记")
+            WHERE r.model IN ('飞书助理 · 个人记录', '看股助手 · 个人记录'){_sw('c')}""").fetchall()], "随手记")
     held = _positions(conn)
     add(held, "持仓")
     return sources, held
