@@ -142,3 +142,35 @@ def test_a_stranger_still_only_gets_his_own(client, owned):  # noqa: F811
         assert payload["records"].get(table) == [], f"别人的 {table} 被一起导出去了"
     # 而「不导」那几张连键都不该出现
     assert "background_jobs" not in payload["records"]
+
+
+def test_assistant_records_export_with_owner_scope(client, owned):
+    company_id = owned["company"]
+    stamp = "2026-10-10"
+    with connection() as conn:
+        conn.execute("""INSERT INTO assistant_actions
+            (id,user_id,session_key,request_key,operation,company_id,original_text,created_at,updated_at)
+            VALUES ('export-action',?,'session','request','remember',?,'先看现金流',?,?)""",
+            (access.OWNER_SCOPE, company_id, stamp, stamp))
+        conn.execute("""INSERT INTO assistant_memory (user_id,memory_key,value,updated_at)
+            VALUES (?,'preference','只考虑小仓位',?)""", (access.OWNER_SCOPE, stamp))
+        conn.execute("""INSERT INTO assistant_subscriptions
+            (user_id,company_id,kind,reason,created_at,updated_at)
+            VALUES (?,?,'research','盯现金流',?,?)""", (access.OWNER_SCOPE, company_id, stamp, stamp))
+        conn.execute("""INSERT INTO assistant_web_messages
+            (id,user_id,content,prompt,created_at,updated_at)
+            VALUES ('export-message',?,'先看现金流','先看现金流',?,?)""", (access.OWNER_SCOPE, stamp, stamp))
+    tables = ('assistant_actions','assistant_memory','assistant_subscriptions','assistant_web_messages')
+    exported = backup.export_records()['records']
+    for table in tables:
+        assert len(exported[table]) == 1
+        assert exported[table][0]['user_id'] == access.OWNER_SCOPE
+    assert exported['assistant_web_messages'][0]['content'] == '先看现金流'
+    assert exported['assistant_memory'][0]['value'] == '只考虑小仓位'
+    token = access.set_scope('other-assistant-user')
+    try:
+        other = backup.export_records()['records']
+        for table in tables:
+            assert other[table] == []
+    finally:
+        access.reset_scope(token)

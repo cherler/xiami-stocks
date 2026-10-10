@@ -89,6 +89,11 @@ AUTHORED_TABLES = (
     # 成交登记。**重新同步一万次也拿不回来**：它记的是你真实的成交价和日期，
     # 而且是「计划内 / 计划外」唯一的原料——丢了它，整段纪律史就没了。
     "decision_fills",
+    # 助手里的原话、修订回执、偏好和提醒条件不能靠重新同步找回。
+    "assistant_actions",
+    "assistant_memory",
+    "assistant_subscriptions",
+    "assistant_web_messages",
 )
 
 # **明确不导的用户表，各写一条理由。**
@@ -115,6 +120,7 @@ _SCOPED_BY_USER = frozenset({
     "research_tasks", "method_assessments", "screen_strategies", "rule_terms",
     "inbox_corrections", "news_feeds", "user_settings", "documents",
     "fundraising_projects",
+    "assistant_actions", "assistant_memory", "assistant_subscriptions", "assistant_web_messages",
     "industry_chain_themes", "industry_chain_stages", "industry_chain_nodes",
     "industry_chain_edges", "industry_chain_company_positions",
 })
