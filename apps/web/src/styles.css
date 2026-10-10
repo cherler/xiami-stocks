@@ -8054,24 +8054,6 @@ a.inbox-title { color: var(--accent-text); }
 .sw-caveats li { margin-bottom: 7px; max-width: 72ch; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
 
 /* ── 决策闭环 ────────────────────────────────────────────────────────── */
-.dl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
-.dl-enroll { display: flex; align-items: center; gap: 8px; }
-.dl-enroll select { padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); font-size: var(--fs-body); }
-.dl-scan-note { flex-basis: 100%; margin: 0; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
-
-/* 「需要我处理」那两格加一道左缘。**这是整页唯一的强调**——
-   多加几处强调就等于没有强调。 */
-.dl-group--act { border-left: 3px solid var(--accent-fill); }
-.dl-group-means { max-width: 70ch; margin: 0 0 12px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
-.dl-items { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.dl-item { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(90px, .6fr) minmax(140px, 1fr) minmax(0, 1.6fr); align-items: baseline; gap: 6px 14px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
-.dl-item:hover { background: var(--surface-sunken); }
-.dl-item-name { font-size: var(--fs-body); }
-.dl-item-name em { margin-left: 6px; color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-meta); font-style: normal; }
-.dl-item-price { font-family: var(--utility); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
-.dl-item-price i { margin-left: 6px; color: var(--ink-muted); font-size: var(--fs-meta); font-style: normal; }
-.dl-item-plan, .dl-item-note { overflow: hidden; color: var(--ink-muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
-
 .dl-symbol { margin-left: 10px; color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-body); font-style: normal; }
 .dl-state-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; max-width: 70ch; line-height: 1.75; }
 /* 九个状态共用一套中性色。**不给状态染色**：给「已搁置」配灰、给「持仓中」配绿，
@@ -8211,7 +8193,7 @@ a.inbox-title { color: var(--accent-text); }
 .ry-model { color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-meta); }
 
 @media (max-width: 720px) {
-  .dl-item, .dl-rung, .ry-events li { grid-template-columns: 1fr; }
+  .dl-rung, .ry-events li { grid-template-columns: 1fr; }
   .sw-run-stats { grid-template-columns: 1fr; }
 }
 

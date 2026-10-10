@@ -12350,8 +12350,26 @@ def decision_loop_board() -> dict[str, Any]:
             if row["symbol"] not in prices:
                 prices[row["symbol"]] = _latest_close(conn, row["symbol"])
         discipline = _plan_discipline(conn)
-        # 还没进闭环的公司。**不自动建卡**：一次性把两百多家全塞进「待研究」，
-        # 那一格就再也没人看了。这里只报个数，让人自己挑。
+        # 首页直接读已有档案；展示不等于建卡，不改变研究或交易状态。
+        research = _rows(conn.execute(
+            f"""SELECT c.id AS company_id, c.symbol, c.name, c.industry, c.is_sample,
+                       (SELECT COUNT(*) FROM theses t WHERE t.company_id = c.id) AS thesis_count,
+                       (SELECT t.claim FROM theses t WHERE t.company_id = c.id
+                        ORDER BY t.updated_at DESC, t.id DESC LIMIT 1) AS latest_claim,
+                       (SELECT t.status FROM theses t WHERE t.company_id = c.id
+                        ORDER BY t.updated_at DESC, t.id DESC LIMIT 1) AS thesis_status,
+                       (SELECT COUNT(*) FROM valuations v WHERE v.company_id = c.id{_sw('v')}) AS valuation_count,
+                       (SELECT COUNT(*) FROM research_reports r WHERE r.company_id = c.id) AS report_count,
+                       (SELECT r.title FROM research_reports r WHERE r.company_id = c.id
+                        ORDER BY r.version DESC LIMIT 1) AS report_title
+                FROM companies c WHERE 1=1{_sw('c')}
+                  AND (c.is_watched = 1 OR c.id IN
+                       (SELECT company_id FROM decision_cards WHERE 1=1{_sw()}))
+                ORDER BY c.updated_at DESC, c.id DESC""").fetchall())
+        for item in research:
+            if item["symbol"] not in prices:
+                prices[item["symbol"]] = _latest_close(conn, item["symbol"])
+            item["price"], item["price_date"] = prices[item["symbol"]]
         outside = conn.execute(
             f"""SELECT COUNT(*) AS n FROM companies c
                 WHERE c.is_watched = 1{_sw('c')}
@@ -12394,6 +12412,7 @@ def decision_loop_board() -> dict[str, Any]:
         ],
         "total": len(rows),
         "not_in_loop": int(outside["n"]) if outside else 0,
+        "research": research,
         "discipline": discipline,
         "states": {key: value for key, value in loop.STATES.items()},
         "state_order": list(loop.STATE_ORDER),

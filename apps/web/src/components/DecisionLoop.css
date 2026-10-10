@@ -1,0 +1,64 @@
+/* 跟踪页沿用品牌纸白、墨色与深青；一张清单，不为状态各造一块面板。 */
+.dl-tracking { display: grid; gap: 16px; }
+.dl-tracking-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 0 2px; }
+.dl-tracking-header h1 { margin: 0; font: 600 28px/1.35 "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); }
+.dl-tracking-header p { margin: 8px 0 0; font-size: var(--fs-body); color: var(--ink-muted); line-height: 1.6; }
+.dl-tracking-tools { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.dl-tracking-sheet { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.dl-tracking-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.dl-tracking-filter { display: flex; gap: 20px; align-items: center; }
+.dl-tracking-filter button { border: 0; padding: 4px 0; background: none; color: var(--ink-muted); font: inherit; font-size: var(--fs-body); cursor: pointer; }
+.dl-tracking-filter button[aria-pressed="true"] { color: var(--accent-text); font-weight: 600; }
+.dl-tracking-filter span { margin-left: 5px; font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.dl-tracking-bar input { width: 190px; min-width: 0; border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; font-size: var(--fs-meta); }
+.dl-tracking-columns, .dl-tracking-row { display: grid; grid-template-columns: minmax(125px, 1fr) minmax(220px, 2.6fr) 110px 150px; gap: 18px; align-items: center; padding: 12px 20px; }
+.dl-tracking-columns { padding-top: 9px; padding-bottom: 9px; color: var(--ink-muted); font-size: var(--fs-meta); background: var(--surface-soft); }
+.dl-tracking-list { padding: 0; margin: 0; list-style: none; }
+.dl-tracking-row + .dl-tracking-row { border-top: 1px solid var(--line); }
+.dl-tracking-row.is-attention { box-shadow: inset 3px 0 var(--accent-fill); }
+.dl-tracking-company { min-width: 0; display: grid; gap: 5px; }
+.dl-tracking-company button { width: fit-content; max-width: 100%; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: var(--fs-body); font-weight: 600; text-align: left; cursor: pointer; }
+.dl-tracking-company button:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 4px; }
+.dl-tracking-company > span { color: var(--ink-muted); font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-tracking-context { min-width: 0; }
+.dl-tracking-state { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 12px; font-size: var(--fs-meta); color: var(--ink-muted); }
+.dl-tracking-state strong { color: var(--ink-body); font-weight: 600; }
+.is-attention .dl-tracking-state strong { color: var(--accent-text); }
+.dl-tracking-context p { margin: 5px 0 0; line-height: 1.65; font-size: var(--fs-body); color: var(--ink-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-tracking-price { display: grid; gap: 5px; font-variant-numeric: tabular-nums; font-size: var(--fs-body); }
+.dl-tracking-price small { color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-tracking-actions { display: flex; align-items: center; gap: 14px; }
+.dl-tracking-actions .text-button { padding: 5px 0; font-size: var(--fs-meta); white-space: nowrap; }
+.dl-tracking-actions .text-button:first-child { color: var(--ink-body); }
+.dl-tracking-more { width: 100%; border: 0; border-top: 1px solid var(--line); padding: 12px; background: var(--paper); color: var(--accent-text); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.dl-tracking-more:hover { background: var(--surface-soft); }
+.dl-tracking-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; padding: 12px 20px; border-top: 1px solid var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.5; }
+.dl-tracking-empty { margin: 0; padding: 24px 20px; color: var(--ink-muted); font-size: var(--fs-body); line-height: 1.7; }
+.dl-tracking-notice, .dl-tracking-message { margin: 0; padding: 12px 0; color: var(--ink-body); font-size: var(--fs-body); line-height: 1.65; }
+.dl-tracking-discipline { border-top: 1px solid var(--line); padding: 12px 0; }
+.dl-tracking-discipline > summary { cursor: pointer; color: var(--ink-body); font-size: var(--fs-body); }
+.dl-tracking-discipline > summary > span { margin-left: 12px; color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-tracking-discipline .dl-discipline { margin-top: 16px; }
+.dl-tracking :is(button, input, summary):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 4px; }
+@media (max-width: 1150px) {
+  .dl-tracking-columns, .dl-tracking-row { grid-template-columns: minmax(110px, 1fr) minmax(160px, 2fr) 95px; gap: 10px 16px; }
+  .dl-tracking-columns > span:last-child { display: none; }
+  .dl-tracking-actions { grid-column: 2 / -1; }
+  .dl-tracking-row { padding-top: 12px; padding-bottom: 12px; }
+}
+@media (max-width: 600px) {
+  .dl-tracking-header { align-items: flex-start; }
+  .dl-tracking-header h1 { font-size: 24px; }
+  .dl-tracking-header p { font-size: var(--fs-meta); }
+  .dl-tracking-tools { flex-direction: column-reverse; gap: 8px; align-items: flex-end; }
+  .dl-tracking-bar { padding: 12px 14px; flex-wrap: wrap; }
+  .dl-tracking-bar input { width: 100%; }
+  .dl-tracking-columns { display: none; }
+  .dl-tracking-row { grid-template-columns: 1fr auto; padding: 14px; gap: 10px 12px; }
+  .dl-tracking-row + .dl-tracking-row { border-top: 1px solid var(--line); }
+  .dl-tracking-price { grid-column: 2; grid-row: 1; text-align: right; }
+  .dl-tracking-context { grid-column: 1 / -1; }
+  .dl-tracking-context p { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .dl-tracking-actions { grid-column: 1 / -1; }
+  .dl-tracking-foot { padding: 12px 14px; }
+}

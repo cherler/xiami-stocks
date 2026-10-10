@@ -1778,6 +1778,12 @@ export type DisciplineTrade = {
   planned_price?: number | null; price_drift?: number | null; fraction?: string | null;
 };
 export type DecisionLoopView = {
+  research: {
+    company_id: number; symbol: string; name: string; industry: string; is_sample: number;
+    thesis_count: number; latest_claim: string | null; thesis_status: string | null;
+    valuation_count: number; report_count: number; report_title: string | null;
+    price: number | null; price_date: string | null;
+  }[];
   groups: {
     state: string; label: string; means: string; next: string;
     actionable: boolean; items: DecisionLoopItem[]; count: number;

@@ -1,45 +1,23 @@
-/**
- * 决策闭环：从"我觉得"到"如果……那么……"。
- *
- * ## 这一页按状态排，不按涨跌幅排
- *
- * 打开股票软件第一眼看到的东西决定了那一天的行为。看到红绿涨跌，
- * 人会去找"今天该买什么"；看到「需要我处理 2 件」，人会去处理那两件。
- *
- * 所以这里没有涨幅榜，没有热门，没有红绿。**它是一个任务系统。**
- *
- * ## 两种"等待"必须分得开
- *
- * 「研究完了在等价格」和「我挺喜欢它但还没开始看」——这两种在普通自选股里
- * 长得一模一样，于是**「我错过了买点」和「我根本还没完成判断」被混成同一种焦虑**。
- * 状态机存在的全部意义就是把它们拆开：后者根本谈不上错过。
- *
- * ## 走不通的那条路要说出理由
- *
- * 一个灰掉的按钮读起来像 bug；一句「没有完成研究和估值之前，不能给出正式买点」
- * 读起来是原则。所以被禁的边在页面上是**有文字的**，不是消失的。
- *
- * ## 「计划外交易」是这一页最该盯的数字
- *
- * 收益率和胜率在几十次决策之前都是噪声，而"我有没有越来越严格地按自己的系统
- * 行动"每一笔都算得出来，且完全在自己手里。
- */
+/** 跟踪首页只聚合已有资料；规则与状态变更仍由用户在详情中确认。 */
 
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  enrollDecisionCard, evaluateDecisionTriggers, getCompanies, getDecisionLoop,
+  enrollDecisionCard, evaluateDecisionTriggers, getDecisionLoop,
   getDecisionCard, moveDecisionState, saveDecisionCard,
   type DecisionLoopView, type DecisionCardView,
   recordFill, deleteFill,
 } from "../api";
-import type { CompanyRecord } from "../types";
+import { trackingRows, researchSummary } from "../lib/tracking";
+import "./DecisionLoop.css";
 import { PanelTitle } from "./PanelTitle";
 
 function rich(text: string) {
   return text.split(/\*\*/).map((part, index) =>
     index % 2 === 1 ? <strong key={index}>{part}</strong> : <span key={index}>{part}</span>);
 }
+
+const THESIS_LABELS: Record<string, string> = { intact: "成立", watching: "待观察", challenged: "受挑战", broken: "已破坏" };
 
 const MONEY = (value: number | null | undefined) =>
   value === null || value === undefined ? "—" : value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
@@ -410,7 +388,7 @@ function Card({ companyId, onBack, onOpenCompany, onOpenPortfolio }: {
   return <>
     <section className="page-intro archive-intro">
       <div>
-        <button type="button" className="text-button" onClick={onBack}>← 回闭环总览</button>
+        <button type="button" className="text-button" onClick={onBack}>返回跟踪清单</button>
         <h1>{card.name}<em className="dl-symbol">{card.symbol}</em></h1>
         <p className="dl-state-line">
           <span className={`dl-chip dl-chip--${card.state}`}>{card.state_label}</span>
@@ -538,26 +516,6 @@ function Card({ companyId, onBack, onOpenCompany, onOpenPortfolio }: {
   </>;
 }
 
-function Enroll({ onEnrolled }: { onEnrolled: () => void }) {
-  const [companies, setCompanies] = useState<CompanyRecord[]>([]);
-  const [chosen, setChosen] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { void getCompanies().then(setCompanies).catch(() => undefined); }, []);
-  return <div className="dl-enroll">
-    <select value={chosen} onChange={(event) => setChosen(event.target.value)}>
-      <option value="">挑一家放进闭环…</option>
-      {companies.map((company) =>
-        <option key={company.id} value={company.id}>{company.name}（{company.symbol}）</option>)}
-    </select>
-    <button type="button" className="text-button" disabled={!chosen || busy}
-            onClick={async () => {
-              setBusy(true);
-              try { await enrollDecisionCard(Number(chosen)); setChosen(""); onEnrolled(); }
-              finally { setBusy(false); }
-            }}>{busy ? "…" : "放进「待研究」"}</button>
-  </div>;
-}
-
 export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
   onOpenCompany: (id: number, tab?: string) => void;
   onOpenPortfolio: () => void;
@@ -565,93 +523,151 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
   const [board, setBoard] = useState<DecisionLoopView | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<number | null>(null);
-  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [scanNote, setScanNote] = useState("");
+  const [readAt, setReadAt] = useState("");
+  const [query, setQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [limit, setLimit] = useState(12);
 
   const load = useCallback(async () => {
-    try { setBoard(await getDecisionLoop()); setError(""); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    try {
+      setBoard(await getDecisionLoop()); setError("");
+      setReadAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      return false;
+    }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  async function scan() {
-    setScanning(true);
+  async function refresh(checkPrices = false) {
+    setBusy(true); setScanNote(""); setError("");
     try {
-      const result = await evaluateDecisionTriggers();
-      setScanNote(result.count === 0
-        ? "没有卡片的价格进入新的区间。"
-        : result.moved.map((item) => `${item.name} ${item.note}`).join("；"));
-      await load();
+      if (checkPrices) {
+        const result = await evaluateDecisionTriggers();
+        if (await load()) setScanNote(result.count === 0
+          ? "本次检查未新增触发记录，使用的是已保存的行情。"
+          : `有 ${result.count} 家进入设定区间，已排在前面。`);
+      } else await load();
     } catch (caught) {
-      setScanNote(caught instanceof Error ? caught.message : String(caught));
-    } finally { setScanning(false); }
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  }
+
+  async function startTracking(companyId: number) {
+    setBusy(true); setError("");
+    try { await enrollDecisionCard(companyId); setOpen(companyId); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setBusy(false); }
   }
 
   if (open !== null) {
     return <Card companyId={open} onBack={() => { setOpen(null); void load(); }}
                  onOpenCompany={onOpenCompany} onOpenPortfolio={onOpenPortfolio} />;
   }
-  if (error) return <p className="form-error">{error}</p>;
-  if (!board) return <div className="empty-state">正在读取…</div>;
+  if (!board) return <div className="dl-tracking-message" role={error ? "alert" : "status"}>
+    <p>{error || "正在读取你的研究…"}</p>
+    {error && <button type="button" className="text-button" disabled={busy}
+      onClick={() => void refresh()}>重新读取</button>}
+  </div>;
 
+  const rows = trackingRows(board);
+  const attention = rows.filter((row) => row.actionable).length;
+  const waiting = rows.some((row) => row.card?.state === "waiting");
+  const matches = rows.filter((row) => (!attentionOnly || row.actionable)
+    && `${row.name} ${row.symbol}`.toLowerCase().includes(query.trim().toLowerCase()));
   const discipline = board.discipline;
-  const groups = board.groups.filter((group) => group.count > 0 || group.actionable);
+  const tradeCount = discipline.inside_count + discipline.outside_count
+    + discipline.undecidable_count + discipline.sell_count;
 
-  return <>
-    <section className="page-intro archive-intro">
+  return <div className="dl-tracking">
+    <header className="dl-tracking-header">
       <div>
-        <span className="section-kicker">LOOP</span>
-        <h1>我现在该处理什么</h1>
-        <p>{rich("每只票只能停在一格上，走到下一格需要的东西是**机器能判的**。"
-          + "这一页按状态排，不按涨跌幅排——**它是一个任务系统，不是行情刺激器。**")}</p>
+        <h1>我的跟踪</h1>
+        <p>{attention > 0 ? `${attention} 家有待关注的变化，已排在前面。`
+          : board.total > 0 ? "当前没有待处理记录，接着看你的研究。"
+          : rows.length > 0 ? "已有资料都在这里，挑一家接着看。" : "从一家你关心的公司开始。"}</p>
       </div>
-      <div className="local-stamp"><span>IN LOOP</span><strong>{board.total} 只</strong>
-        <em>研究池里还有 {board.not_in_loop} 只没进来</em></div>
+      <div className="dl-tracking-tools">
+        {waiting && <button type="button" className="text-button" disabled={busy}
+          onClick={() => void refresh(true)}>检查价格条件</button>}
+        <button type="button" className="page-action page-action--row page-action--small" disabled={busy}
+          onClick={() => void refresh()}>{busy ? "正在更新…" : "刷新"}</button>
+      </div>
+    </header>
+    {error && <p className="form-error" role="alert">刷新失败，以下保留上次读取的资料。{error}</p>}
+    {scanNote && <p className="dl-tracking-notice" role="status">{scanNote}</p>}
+
+    <section className="dl-tracking-sheet" aria-label="公司跟踪清单">
+      <div className="dl-tracking-bar">
+        <div className="dl-tracking-filter">
+          <button type="button" aria-pressed={!attentionOnly}
+            onClick={() => { setAttentionOnly(false); setLimit(12); }}>全部公司 <span>{rows.length}</span></button>
+          {(attention > 0 || attentionOnly) && <button type="button" aria-pressed={attentionOnly}
+            onClick={() => { setAttentionOnly(true); setLimit(12); }}>需要关注 <span>{attention}</span></button>}
+        </div>
+        {rows.length > 8 && <input type="search" aria-label="筛选跟踪公司" placeholder="搜索这份清单"
+          value={query} onChange={(event) => { setQuery(event.target.value); setLimit(12); }} />}
+      </div>
+      {rows.length > 0 && <div className="dl-tracking-columns" aria-hidden="true">
+        <span>公司</span><span>当前情况与已有研究</span><span>参考价 / 日期</span><span>接着看</span>
+      </div>}
+      <ul className="dl-tracking-list">
+        {matches.slice(0, limit).map((row) => {
+          const card = row.card;
+          const note = row.actionable && card ? card.entered_reason || card.watch_reason
+            : row.latest_claim || row.report_title || card?.watch_reason;
+          const stateLabel = card?.state === "triggered" ? "价格进入设定区间"
+            : card?.state === "discovered" && (row.thesis_count + row.valuation_count + row.report_count > 0)
+              ? "已有研究" : card?.state_label;
+          return <li key={row.company_id} className={row.actionable ? "dl-tracking-row is-attention" : "dl-tracking-row"}>
+            <div className="dl-tracking-company">
+              <button type="button" onClick={() => onOpenCompany(row.company_id)}>{row.name}</button>
+              <span>{row.symbol}{row.is_sample ? " · 示例" : row.industry ? ` · ${row.industry}` : ""}</span>
+            </div>
+            <div className="dl-tracking-context">
+              <div className="dl-tracking-state">
+                {card && <strong>{stateLabel}</strong>}
+                {card?.ideal_low != null && card?.ideal_high != null && <span>
+                  理想区 {MONEY(card.ideal_low)}–{MONEY(card.ideal_high)}</span>}
+                <span>{researchSummary(row)}</span>
+              </div>
+              {note ? <p title={note}>{note === row.latest_claim && row.thesis_status ? `${THESIS_LABELS[row.thesis_status] || "判断"}：` : ""}{note.replace(/\*\*/g, "")}</p>
+                : <p>{card ? "可打开计划查看价格条件和下一步。" : "尚未写下判断，可先查看公司资料。"}</p>}
+            </div>
+            <div className="dl-tracking-price">
+              <span>{MONEY(row.price)}</span>
+              <small>{row.price_date?.slice(0, 10) || "暂无行情记录"}</small>
+            </div>
+            <div className="dl-tracking-actions">
+              <button type="button" className="text-button" onClick={() => onOpenCompany(row.company_id,
+                row.latest_claim ? "research" : row.report_count > 0 ? "chain" : row.valuation_count > 0 ? "market" : undefined)}>查看研究</button>
+              {card ? <button type="button" className="text-button" onClick={() => setOpen(row.company_id)}>
+                {row.actionable ? "查看变化" : "查看计划"}</button>
+                : <button type="button" className="text-button" disabled={busy}
+                    onClick={() => void startTracking(row.company_id)}>设置计划</button>}
+            </div>
+          </li>;
+        })}
+      </ul>
+      {matches.length === 0 && <p className="dl-tracking-empty">
+        {rows.length === 0 ? "还没有公司档案。用上方搜索找到公司，即可开始研究。"
+          : query ? "没有匹配的公司，换个名称或代码试试。" : "当前没有待关注的记录。"}
+      </p>}
+      {matches.length > limit && <button type="button" className="text-button dl-tracking-more"
+        onClick={() => setLimit((value) => value + 20)}>再显示 20 家（还有 {matches.length - limit} 家）</button>}
+      <footer className="dl-tracking-foot">
+        <span>{board.total > 0 ? `${board.total} 家已进入跟踪` : "尚未设置跟踪计划"} · 已有资料无需重新录入</span>
+        <span>资料读取于 {readAt}，行情日期见各行</span>
+      </footer>
     </section>
 
-    <section className="panel jd-panel dl-toolbar">
-      <button type="button" className="page-action" disabled={scanning} onClick={() => void scan()}>
-        {scanning ? "正在扫…" : "扫一遍价格触发"}
-      </button>
-      <Enroll onEnrolled={() => void load()} />
-      {scanNote && <p className="dl-scan-note">{scanNote}</p>}
-    </section>
-
-    {groups.map((group) => <section key={group.state}
-            className={`panel jd-panel dl-group${group.actionable ? " dl-group--act" : ""}`}>
-      <div className="panel-heading"><div>
-        <span className="eyebrow">{group.count} 只</span>
-        <PanelTitle hint={group.next}>{group.label}</PanelTitle>
-      </div></div>
-      <p className="dl-group-means">{rich(group.means)}</p>
-      {group.items.length === 0 ? <p className="empty-state">这一格是空的。</p>
-        : <ul className="dl-items">
-          {group.items.map((item) => <li key={item.company_id}>
-            <button type="button" className="dl-item" onClick={() => setOpen(item.company_id)}>
-              <span className="dl-item-name">{item.name}<em>{item.symbol}</em></span>
-              <span className="dl-item-price">{MONEY(item.price)}
-                {item.band_label && <i>{item.band_label}</i>}</span>
-              <span className="dl-item-plan">
-                {item.ideal_low !== null && item.ideal_high !== null
-                  ? `理想区 ${MONEY(item.ideal_low)}–${MONEY(item.ideal_high)}`
-                  : item.ready ? "未定价格带" : "尚未完成判断"}
-              </span>
-              <span className="dl-item-note">{rich(item.entered_reason || item.watch_reason)}</span>
-            </button>
-          </li>)}
-        </ul>}
-    </section>)}
-
-    <section className="panel jd-panel dl-discipline">
-      <div className="panel-heading"><div>
-        <span className="eyebrow">纪律</span>
-        <PanelTitle hint="收益率和胜率在几十次决策之前都是噪声；「我有没有按自己的系统行动」每一笔都算得出来。">
-          计划内 / 计划外交易
-        </PanelTitle>
-      </div>
-      {discipline.discipline_rate !== null && <span className="dl-rate">
-        {(discipline.discipline_rate * 100).toFixed(0)}% 在计划内</span>}
-      </div>
+    {tradeCount > 0 && <details className="dl-tracking-discipline">
+      <summary>交易纪律 <span>{tradeCount} 笔记录{discipline.outside_count > 0
+        ? `，${discipline.outside_count} 笔计划外买入` : ""}</span></summary>
+      <div className="dl-discipline">
       <dl className="dl-counts">
         <div><dt>计划内买入</dt><dd>{discipline.inside_count}</dd></div>
         <div><dt>计划外买入</dt><dd>{discipline.outside_count}</dd></div>
@@ -668,8 +684,7 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
         </ul>
       </>}
       {discipline.undecidable.length > 0 && <details className="dl-undecidable">
-        <summary>{discipline.undecidable_count} 笔无法判定——{
-          "「不知道」不算违规，把不知道说成违规，这个指标就没人肯看了"}</summary>
+        <summary>{discipline.undecidable_count} 笔缺少判断依据</summary>
         <ul className="dl-trades">
           {discipline.undecidable.map((trade) => <li key={trade.id}>
             <span>{trade.trade_date} · {trade.company_name} · {MONEY(trade.price)}</span>
@@ -677,7 +692,8 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
           </li>)}
         </ul>
       </details>}
-      <p className="dl-sell-note">{discipline.sell_note}</p>
-    </section>
-  </>;
+      <p className="dl-sell-note">按成交时保存的计划核对买入记录。</p>
+      </div>
+    </details>}
+  </div>;
 }
