@@ -35,6 +35,8 @@ SYNCHRONOUS_MODEL_ROUTES = {
     "POST /api/v1/inbox/tidy",
     "POST /api/v1/companies/{company_id}/assessment",
     "POST /api/v1/value-candidates",
+    # 涨跌归因那段解释。规则层（GET /rally）不调模型，所以只登记 POST 这一条。
+    "POST /api/v1/companies/{company_id}/rally/narrate",
 }
 
 

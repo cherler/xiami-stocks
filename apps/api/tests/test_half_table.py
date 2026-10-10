@@ -66,23 +66,3 @@ def test_the_error_says_what_would_have_been_lost():
         assert "丢掉" in str(caught) and "半张表" in str(caught)
     else:
         pytest.fail("没抛")
-
-
-# --------------------------------------------------- 交割单读图：最贵的那次调用
-
-def test_a_tile_that_ran_out_of_room_says_so_specifically():
-    """没写完跟"读不出来"是两回事，下一步动作也不一样：
-
-    · 没写完 → 这一段行数太多，把它截短一点重传
-    · 读不出来 → 多半是图糊，重新截一张清楚的
-
-    混成一句「没读成功」，使用者只会反复重传同一张图。
-    """
-    from stock_decision import ledger_scan
-
-    assert hasattr(ledger_scan, "REFORMAT_SHAPE")
-    # 重排的结构必须跟主提示词同形，否则重排出来字段对不上，_merge 读出零行
-    for field in ("page_symbol", "page_company", "page_fee_total", "trades",
-                  "side", "trade_date", "shares", "price", "fee", "cash_amount"):
-        assert field in ledger_scan.REFORMAT_SHAPE, field
-        assert field in ledger_scan.SCAN_SYSTEM_PROMPT, field

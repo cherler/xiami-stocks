@@ -136,12 +136,51 @@ def test_another_user_cannot_reach_my_records(client, owned, method, template, b
 
 # 这几个接口用 200 表达「没做成」（批量逐条报错、删除返回 deleted:false）。
 # 判据只看状态码会把它们误判成漏，所以单独按**效果**验：东西还在、没写进去。
-def test_batch_trade_cannot_be_written_into_someone_elses_portfolio(client, owned):
+def test_cannot_delete_someone_elses_portfolio(client, owned):
+    """删组合是 2026-09-24 新开的口子，**破坏力比清流水还大**：连组合带持仓一起没。
+
+    它对"不是你的"返回 404，所以状态码判据看得见；这里再按效果验一遍。
+    """
     client.as_user("user-7")
-    response = client.post(f"/api/v1/portfolios/{owned['portfolio']}/trades/batch", json={
-        "trades": [{"company_id": owned["company"], "side": "buy", "weight_percent": 5.0,
-                    "trade_date": "2026-08-05", "rationale": "批量塞进别人组合"}]})
-    assert response.json()["created"] == [], "交易被写进了别人的组合"
+    client.delete(f"/api/v1/portfolios/{owned['portfolio']}")
+
+    client.as_user(access.OWNER_SCOPE)
+    names = [p["id"] for p in client.get("/api/v1/portfolios").json()]
+    assert owned["portfolio"] in names, "别人把我的组合删掉了"
+
+
+def test_cannot_record_a_fill_on_someone_elses_card(client, owned):
+    """成交登记装的是**真实成交价**，比状态日志更敏感。"""
+    client.as_user("user-7")
+    client.post(f"/api/v1/companies/{owned['company']}/fills",
+                json={"price": 300.0})
+
+    client.as_user(access.OWNER_SCOPE)
+    card = client.get(f"/api/v1/companies/{owned['company']}/decision-card").json()
+    assert card.get("fills") == [], "别人往我的卡上记了一笔成交"
+
+
+def test_purge_cannot_wipe_someone_elses_portfolio(client, owned):
+    """**这是全站破坏力最大的一个接口**：一次调用清掉一家公司的全部流水。
+
+    它用 200 表达「没做成」（deleted: 0），所以只看状态码的判据会漏掉它。
+    按效果验：别人的流水必须一条不少地还在。
+
+    （原来这里测的是 `/trades/batch`，那条路随读图功能一起删掉了。
+    删掉一个接口时顺手把它的越权判据也删掉是常见的失守方式 ——
+    这里换成覆盖接替它的那个。）
+    """
+    client.as_user(access.OWNER_SCOPE)
+    before = len(client.get(f"/api/v1/portfolios/{owned['portfolio']}").json()["trades"])
+
+    client.as_user("user-7")
+    response = client.post(f"/api/v1/portfolios/{owned['portfolio']}/trades/purge",
+                           json={"company_ids": [owned["company"]]})
+    assert response.json().get("deleted", 0) == 0, "别人把我的流水清掉了"
+
+    client.as_user(access.OWNER_SCOPE)
+    after = client.get(f"/api/v1/portfolios/{owned['portfolio']}").json()["trades"]
+    assert len(after) == before, f"流水从 {before} 条变成了 {len(after)} 条"
 
 
 def test_deleting_someone_elses_news_feed_does_nothing(client, owned):
@@ -286,6 +325,17 @@ PER_USER = {
     # 他自己那份的加工视图：体检矩阵、归因、简报、决策台、收件箱 —— 都按数据域过滤
     "/api/v1/assessment-matrix", "/api/v1/attribution", "/api/v1/briefing",
     "/api/v1/decision-board", "/api/v1/inbox", "/api/v1/quick-thesis",
+    # 决策闭环：一只票停在闭环的哪一格，是**这个人自己的判断进度**，
+    # 不是关于公司的事实。decision_cards 自带 user_id 并挂了行级安全，
+    # decision_transitions 按 company_id 回溯到 companies —— 各看各的。
+    "/api/v1/decision-loop",
+    # 助理仅返回当前用户的股票、核验、研究和提醒记录；公司入口先校验所属数据域。
+    "/api/v1/assistant/my-stocks", "/api/v1/assistant/resolve",
+    "/api/v1/assistant/check/", "/api/v1/assistant/research/", "/api/v1/assistant/status",
+    # 按代码查涨跌归因：跑在**全市场公开数据**上（行情底座 + 申万行业中位），
+    # 跟 /api/v1/market、/api/v1/universe 同一类。落到某只已建档的票时走的是
+    # 按数据域过滤的那条路（rally_facts_by_symbol 先用 _sw() 找公司）。
+    "/api/v1/rally",
     # 选股与候选：跑在全市场公开数据上，各人存各人的策略与结果
     "/api/v1/screen", "/api/v1/value-candidates",
     # 全市场的统计口径，不涉及任何人的记录

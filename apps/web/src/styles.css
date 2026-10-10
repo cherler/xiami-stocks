@@ -3486,24 +3486,6 @@ a.inbox-title { color: var(--accent-text); }
 .task-auto { margin-top: 10px; }
 .task-row { border-top: 1px solid var(--hairline); padding-bottom: 10px; }
 .task-row:first-child { border-top: none; }
-/* 初筛结论：结论条一行，支持与待核实并排两列。
-   两列等宽而不是按内容伸缩 —— 疑点少不代表它不重要，让宽度替模型表态是不对的。 */
-.scan-flag { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: var(--r-pill); font-family: var(--utility); font-size: var(--fs-meta); font-weight: 600; letter-spacing: .04em; }
-.scan-flag--ok { color: #1f5d46; background: #d8f2e7; }
-.scan-flag--check { color: #7a4a12; background: #fbecd6; }
-:root[data-theme="dark"] .scan-flag--ok { color: #a8ddc7; background: #17362b; }
-:root[data-theme="dark"] .scan-flag--check { color: #e8c48c; background: #3a2c15; }
-
-/* 对账横幅：逐行费用 vs 页头「交易税费」合计。
-   这是读图结果里唯一一个能被算出来的完整性检查，所以它单独占一行、
-   不混进下面那串提示——混进去就等于让人自己去发现它。 */
-.scan-reconcile { margin: 10px 0 4px; padding: 9px 12px; border-radius: var(--r-well);
-  border-left: 3px solid transparent; font-size: var(--fs-small); line-height: 1.6; }
-.scan-reconcile strong { font-weight: 700; }
-.scan-reconcile--ok { color: #1f5d46; background: #eaf7f1; border-left-color: #35876a; }
-.scan-reconcile--off { color: #7a4a12; background: #fdf4e6; border-left-color: #c98a2e; }
-:root[data-theme="dark"] .scan-reconcile--ok { color: #a8ddc7; background: #12291f; border-left-color: #35876a; }
-:root[data-theme="dark"] .scan-reconcile--off { color: #e8c48c; background: #2b2110; border-left-color: #c98a2e; }
 
 .task-review { display: grid; grid-template-columns: auto 1fr 1fr; gap: 10px 16px; align-items: start;  padding: 9px 11px; border-radius: var(--r-well);  }
 .task-review > .grade-chip { grid-row: 1; align-self: center; }
@@ -4008,89 +3990,6 @@ a.inbox-title { color: var(--accent-text); }
 .briefing-section--gaps[open] summary { margin-bottom: 9px; }
 .briefing-summary .briefing-headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 花费提示：要看得见，但不能抢走结论的位置——它是事后交代，不是内容。 */
-/* 读图结果的待确认列表。每行都要一眼看出「能不能记」。 */
-.scan-rows { display: flex; flex-direction: column; gap: 2px; margin: 10px 0; }
-/* **选择器要带上 .inline-form，不是为了好看，是因为不带就不生效。**
-   上面 1313 行有一条 `.editor-form label, .inline-form label { display: block }`，
-   特指度 (0,1,1) 高于单独的 `.scan-row` (0,1,0) —— 于是这里原来写的 grid
-   从来没有生效过，每一行的公司、代码、日期、股数全部挤成一串连在一起的数字，
-   而这一页的全部工作恰恰是逐条核对数字。
-   同一条规则里的 `.inline-form input { width: 100% }` 也一样，
-   会把勾选框撑成整行宽，所以下面一并压回去。 */
-.inline-form .scan-row {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: start; gap: 10px;
-  /* **一对一核对是逐行的活，邻近性比纵向对齐重要。**
-     金额靠 margin-left:auto 推到最右，本意是让各行数字对齐成一列（好看出
-     1500 和 150 的差别）；但面板有一千四百像素宽，眼睛要从「2024-10-08」
-     横跨大半屏才能读到「1500 股 × 50.2」，而这一页要做的正是一行一行地对。
-     给行一个上限：**纵列还是对齐的，只是这一列被拉近了**，两个好处都留住。 */
-  max-width: 820px;
-  padding: 9px 11px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-mark);
-  background: var(--paper);
-  font-size: var(--fs-small);
-  cursor: pointer;
-}
-.inline-form .scan-row input[type="checkbox"] {
-  width: auto; margin: 3px 0 0; padding: 0; border: none; background: none;
-}
-.scan-row:hover { border-color: var(--line); }
-/* 对不上档案或读不出日期的：**看得出来不能记**，而不是勾不动却不说为什么 */
-.scan-row--blocked { background: var(--surface-sunken); color: var(--ink-faint); cursor: not-allowed; }
-
-/* 第一层：这笔交易本身。字段之间给足横向间距，**折行时也不会连在一起**——
-   `gap` 的第一个值管的就是折行后的行距。 */
-.scan-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.scan-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
-.scan-row b { font-weight: 650; color: var(--ink); }
-.scan-row--blocked b { color: var(--ink-faint); }
-.scan-symbol { color: var(--ink-faint); font-family: var(--utility); font-size: var(--fs-meta); }
-.scan-date { color: var(--ink-body); font-family: var(--utility); }
-/* 股数与单价是这一页最要紧的两个数，等宽字体让位数对得齐、一眼看得出多一位少一位。 */
-.scan-amount { margin-left: auto; color: var(--ink); font-family: var(--utility); font-weight: 600; }
-
-/* 第二层：这条读得准不准。
-   **靠间距分隔，不用分隔点。** 试过在 span 之间加 `::before { content: "·" }`，
-   窄屏折行时那个点会落在下一行的开头，变成一个没有下文的孤点——
-   看起来就像页面坏了。间距做不到那么"整齐"，但它在任何宽度下都不会出错。 */
-/* 账本里已经有了：**这是这一步唯一会造成不可逆错误的地方**——
-   两笔一模一样的交易，事后分辨不出哪一笔是多的。 */
-.scan-flag--known { color: #7a4a12; background: #fbecd6; }
-:root[data-theme="dark"] .scan-flag--known { color: #e8c48c; background: #3a2c15; }
-
-/* 费用：跟在成交额后面。**漏一笔费用成本价就一直偏低，而它不会报错**，
-   所以没读到时要用醒目的方式说出来，不是留空。 */
-.scan-fee { color: var(--ink-faint); font-family: var(--utility); font-size: var(--fs-meta); flex: none; }
-.scan-fee--miss { color: var(--amber); font-weight: 600; }
-
-/* 「改这条」推到元信息行的最右，跟前面那串"读得准不准"分开——
-   前面是判断依据，它是动作。 */
-.scan-fix { margin-left: auto; font-size: var(--fs-meta); font-weight: 600; white-space: nowrap; }
-/* 改过的地方要看得见，而且写着模型原来读的是什么：
-   不写的话，过一阵你自己也分不清这个数是读出来的还是你改的。 */
-.scan-edited { color: var(--amber); }
-
-/* 改这条：一行一行地对，改完就地能勾上。 */
-.scan-edit {
-  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end;
-  margin-top: 9px; padding: 10px 11px; border: 1px dashed var(--line);
-  border-radius: var(--r-mark); background: var(--surface-sunken);
-}
-.inline-form .scan-edit label { display: flex; flex-direction: column; gap: 3px;
-  color: var(--ink-body); font-size: var(--fs-meta); }
-.inline-form .scan-edit input, .inline-form .scan-edit select {
-  width: auto; min-width: 96px; margin: 0; padding: 5px 7px; font-size: var(--fs-small);
-}
-.inline-form .scan-edit input[type="date"] { min-width: 132px; }
-.scan-edit-note { flex-basis: 100%; margin: 2px 0 0; color: var(--ink-faint);
-  font-size: var(--fs-meta); line-height: 1.6; }
-
-.scan-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px;
-  color: var(--ink-faint); font-size: var(--fs-meta); line-height: 1.6; }
-
 /* 五种记录类型各自的底色。分红与送股是「发生在你身上的事」，用中性色，
    与买卖这种「你的决定」区分开。 */
 .trade-side--dividend { color: var(--jade); background: var(--blue-soft); }
@@ -4927,7 +4826,8 @@ a.inbox-title { color: var(--accent-text); }
 .vs-fig { margin: 0 0 26px; max-width: 760px; }
 .vs-fig figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 30px; color: var(--ink); font-size: var(--fs-body); font-weight: 600; }
 .vs-fig figcaption span { color: var(--ink-soft); font-family: var(--utility); font-size: var(--fs-meta); font-weight: 400; }
-.vs-ruler { position: relative; height: 58px; margin: 0 26px; }
+/* 高度要容得下错开的第二行标签（见 Ruler 里那段说明） */
+.vs-ruler { position: relative; height: 80px; margin: 0 26px; }
 .vs-axis { position: absolute; top: 8px; left: 0; right: 0; height: 2px; background: var(--line); display: block; }
 .vs-mark { position: absolute; top: 0; transform: translateX(-50%); text-align: center; }
 .vs-mark b { display: block; width: 9px; height: 9px; margin: 4px auto 0; border-radius: 50%; }
@@ -4935,6 +4835,11 @@ a.inbox-title { color: var(--accent-text); }
 /* 现价是事实：实心方块 + 深色 + 加粗，跟三个条件推论一眼分得开 */
 .vs-mark--now b { width: 3px; height: 17px; margin-top: 0; border-radius: var(--r-mark); }
 .vs-mark--now em { color: var(--ink); font-weight: 600; }
+/* **撞在一起的标签错到下面一行。** 基准 255 和现价 305 只差 16%，
+   在尺子上几乎同一个点 —— 不错行的话两个标签叠成一坨谁也读不出来。
+   记号本身不动，只挪文字，并补一根短竖线把文字跟记号连起来。 */
+.vs-mark--low em { margin-top: 26px; }
+.vs-mark--low::after { content: ""; position: absolute; top: 15px; left: 50%; width: 1px; height: 14px; background: var(--line); }
 
 .vs-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin: 0 0 14px; color: var(--ink-soft); font-size: var(--fs-small); }
 .vs-controls label { display: inline-flex; align-items: center; gap: 6px; }
@@ -5374,14 +5279,6 @@ a.inbox-title { color: var(--accent-text); }
 .trade-group-head em { color: var(--ink-soft); font-family: var(--utility); font-size: var(--fs-meta); font-style: normal; }
 .tg-last { margin-left: auto; color: var(--ink-faint); font-family: var(--utility); font-size: var(--fs-meta); }
 .trade-group .trade-list { padding: 0 13px 8px; }
-
-/* 记完之后还剩多少没记。**一个不完整的账本比没有账本更糟：它看起来是完整的。** */
-.scan-left {
-  margin: 10px 0 0; padding: 10px 13px; border-left: 3px solid #c98a24;
-  border-radius: 0 5px 5px 0; background: var(--surface-sunken);
-  color: var(--ink-body); font-size: var(--fs-small); line-height: 1.75;
-}
-.scan-left--pre { margin: 0 0 10px; }
 
 /* 长列表的「再展开」。**剩多少条要写出来**——只写「展开更多」的话，
    人不知道下面还有 3 条还是 300 条，于是要么不点、要么点了才发现是个无底洞。 */
@@ -8012,3 +7909,477 @@ a.inbox-title { color: var(--accent-text); }
 .doc-tags em { padding: 1px 8px; border: 1px solid var(--hairline); border-radius: var(--r-pill); color: var(--ink-body); background: var(--surface-sunken); font-style: normal; font-size: var(--fs-tiny); }
 /* 「有 N 份还用着文件名当标题」那一行。只在真有的时候才出现。 */
 .doc-retitle { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 0; color: var(--ink-faint); font-size: var(--fs-small); }
+
+/* ── 产业链:按环节横排 ────────────────────────────────────────────────
+   底图回答「货怎么一段段交出去」,横排回答「同一环节里这些公司贵不贵、赚不赚钱」。
+   两屏共用同一份数据,所以切换不重新取底图。
+
+   配色必须用 deck 那套令牌:这一屏挂在 .deck(深色舱体)里,.deck 把 color 设成了
+   接近白的 --deck-ink。第一版我按浅色主题写(白卡片 + 默认字色),结果是白底上的白字——
+   computed color 是 rgb(239,247,245),截图里整片数字几乎看不见,而 CSS 一行都没报错。 */
+.chain-blueprint[hidden] { display: none !important; }
+
+.chain-layout-switch { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--deck-line); border-radius: var(--r-pill, 999px); background: rgba(255, 255, 255, .04); }
+.chain-layout-switch button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border: 0; border-radius: var(--r-pill, 999px); background: transparent; color: var(--deck-soft); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.chain-layout-switch button:hover { color: var(--deck-ink); background: rgba(255, 255, 255, .06); }
+.chain-layout-switch button.is-active { color: #142b33; background: var(--deck-gold); font-weight: 700; }
+
+.chain-compare { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px 18px; }
+.chain-compare-lede { margin: 0; color: var(--deck-soft); font-size: var(--fs-small); line-height: 1.8; }
+.chain-compare-lede strong { color: var(--deck-ink); }
+.chain-compare-empty { padding: 20px 18px; color: var(--deck-soft); font-size: var(--fs-body); }
+.chain-compare-node { padding: 12px 14px; border: 1px solid var(--deck-line); border-radius: var(--r-well, 8px); background: var(--deck-panel); }
+.chain-compare-node-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 18px; }
+.chain-compare-node-head small { display: block; color: var(--deck-faint); font-size: var(--fs-meta); letter-spacing: .03em; }
+.chain-compare-node-head strong { color: var(--deck-ink); font-family: var(--song); font-size: var(--fs-lead); }
+.chain-compare-node-head p { max-width: 62ch; margin: 4px 0 0; color: var(--deck-soft); font-size: var(--fs-meta); line-height: 1.7; }
+.chain-compare-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
+.chain-compare-stats div { min-width: 60px; text-align: right; }
+.chain-compare-stats dt { color: var(--deck-faint); font-size: var(--fs-meta); }
+.chain-compare-stats dd { margin: 0; color: var(--deck-ink); font-family: var(--utility); font-size: var(--fs-body); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* 拥挤度:分子是 A 股这一批、分母常是全球盘子,所以口径必须和数字待在一起 */
+.chain-compare-crowding { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 10px 0 0; padding: 7px 10px; border-left: 2px solid var(--deck-gold); border-radius: 0 var(--r-well, 8px) var(--r-well, 8px) 0; background: rgba(242, 200, 111, .08); color: var(--deck-soft); font-size: var(--fs-meta); }
+.chain-compare-crowding strong { color: var(--deck-gold); font-family: var(--utility); font-size: var(--fs-body); }
+/* 口径这一句压在金色底(rgba(242,200,111,.08) 合成后 #2a3f42)上,用 --deck-faint 只有 3.84:1,
+   不到正文档;换成 --deck-soft 才 5.1:1。半透明底要合成后再量,直接拿 rgba 当颜色算会得出「对比度 1」的假警报。 */
+.chain-compare-crowding em { max-width: 66ch; overflow: hidden; color: var(--deck-soft); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.chain-compare-crowding a { display: inline-flex; align-items: center; gap: 3px; color: var(--deck-gold); }
+
+/* 这一条不是装饰:不标出「几家没行情」,上面那些中位数会被悄悄算在少数几家身上 */
+.chain-compare-warn { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: #e0b98a; font-size: var(--fs-meta); }
+.chain-compare-table { margin-top: 10px; overflow-x: auto; }
+.chain-compare-table table { width: 100%; min-width: 980px; border-collapse: collapse; font-family: var(--utility); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.chain-compare-table th, .chain-compare-table td { padding: 6px 8px; border-bottom: 1px solid var(--deck-line); color: var(--deck-ink); text-align: right; white-space: nowrap; }
+.chain-compare-table thead th { color: var(--deck-faint); font-weight: 400; }
+.chain-compare-table th[scope="row"], .chain-compare-table thead th:first-child { text-align: left; }
+.chain-compare-table th[scope="row"] em { display: block; color: var(--deck-faint); font-size: var(--fs-meta); font-style: normal; }
+.chain-compare-table tbody tr:hover { background: rgba(255, 255, 255, .04); }
+.chain-compare-table tbody tr.is-muted td { color: var(--deck-faint); }
+.chain-compare-table a { color: var(--deck-gold); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 我的判断 · 做 T 回测 / 决策闭环 / 涨跌归因
+ *
+ * **这一段里一个写死的颜色都没有。** 三页上负数很多（做 T 大多是亏的、
+ * 跌幅归因常是跌的），而那些负数不是错误——它们正是要传达的结论。
+ * 涂红会让结论读起来像报警，而报警是会被关掉的。
+ * 所以状态一律靠左缘一道线 + 字重区分，底色只用两套主题都有值的令牌。
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* ── 共用：面板内衬 ───────────────────────────────────────────────────── */
+/*
+ * **`.panel` 自己不带内边距**（全站惯例：每个子元素各自给）。
+ * 这三页的面板子元素有二十来种，逐个写 padding 必然漏 —— 而漏掉的表现是
+ * 那一块文字顶到纸边、右边被切掉，看起来像"设计就是这样"，不像 bug。
+ * 实测第一版就是这样：判据表右边的「最长连跌 6 天」被切掉了一半。
+ *
+ * 所以给一个统一的内衬类。面板头用负边距拉回纸边，它自己的 padding 管间距，
+ * 底下那条分隔线因此仍然横贯整张纸。
+ */
+.jd-panel { padding: 20px 22px; }
+.jd-panel > .panel-heading { margin: -20px -22px 16px; }
+.jd-panel > .panel-heading:only-child { margin-bottom: -20px; }
+
+/* ── 共用：控制条 ─────────────────────────────────────────────────────── */
+.sw-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px; }
+.sw-controls label { display: flex; flex-direction: column; gap: 4px; }
+.sw-controls label > span { color: var(--ink-muted); font-size: var(--fs-meta); }
+.sw-controls select, .sw-controls input { min-width: 130px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); font-size: var(--fs-body); }
+.sw-controls input[type="number"] { width: 110px; font-family: var(--utility); font-variant-numeric: tabular-nums; }
+
+/* ── 做 T 回测 ────────────────────────────────────────────────────────── */
+.sw-held { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 12px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); }
+.sw-held em { flex-basis: 100%; color: var(--ink-muted); font-style: normal; }
+
+/* 论证的每一步都从一句话开始。**结论在前、数据在后**——反过来排的话，
+   人会先看到一个收益数字，然后用后面的文字去给它找理由。 */
+.sw-headline { max-width: 72ch; margin: 4px 0 14px; line-height: 1.75; }
+.sw-headline--second { padding-top: 10px; border-top: 1px dashed var(--line); }
+.sw-warn { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--amber); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); }
+
+/* 三种判词。**都不用红绿**：「看不出规律」不是坏消息，它是答案。 */
+.sw-verdict { padding: 3px 10px; border-left: 3px solid var(--line); border-radius: 0 var(--r-pill) var(--r-pill) 0; background: var(--surface-sunken); color: var(--ink); font-size: var(--fs-meta); white-space: nowrap; }
+.sw-verdict--yes { border-left-color: var(--jade); }
+.sw-verdict--mixed { border-left-color: var(--amber); }
+.sw-verdict--no { border-left-color: var(--ink-muted); }
+
+.sw-conds { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 6px 0 16px; }
+.sw-cond { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--paper); }
+.sw-cond h4 { margin: 0; color: var(--ink-muted); font-size: var(--fs-meta); font-weight: 400; }
+.sw-cond-big { margin: 4px 0 10px; font-family: var(--utility); font-size: 26px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.sw-cond dl { display: grid; gap: 3px; margin: 0; font-size: var(--fs-meta); }
+.sw-cond dl > div { display: flex; justify-content: space-between; gap: 10px; }
+.sw-cond dt { color: var(--ink-muted); }
+.sw-cond dd { margin: 0; font-family: var(--utility); font-variant-numeric: tabular-nums; }
+.sw-p { margin: 8px 0 0; padding-top: 7px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.6; }
+.sw-rho-note { margin: 0 0 8px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.6; }
+
+.sw-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 18px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: var(--fs-meta); }
+.sw-facts > div { display: flex; justify-content: space-between; gap: 8px; }
+.sw-facts dt { color: var(--ink-muted); white-space: nowrap; }
+.sw-facts dd { margin: 0; font-family: var(--utility); font-variant-numeric: tabular-nums; }
+
+.sw-runs { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
+.sw-run { padding: 13px 15px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--paper); }
+/* 天花板那张卡用一道边区分：**它不是一条可以照着做的规则**，
+   混在其他三张里会被当成"最好的那个策略"。 */
+.sw-run--ceiling { border-left: 3px solid var(--amber); }
+.sw-run header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.sw-run h4 { margin: 0; font-size: var(--fs-body); }
+.sw-run-net { display: flex; flex-direction: column; align-items: flex-end; font-family: var(--utility); font-size: 17px; font-variant-numeric: tabular-nums; }
+.sw-run-net em { color: var(--ink-muted); font-family: inherit; font-size: var(--fs-meta); font-style: normal; }
+.sw-run-blurb { margin: 7px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.6; }
+.sw-run-empty { margin: 8px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
+.sw-run-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 14px; margin: 10px 0 0; padding-top: 9px; border-top: 1px dashed var(--line); font-size: var(--fs-meta); }
+.sw-run-stats > div { display: flex; justify-content: space-between; gap: 8px; }
+.sw-run-stats dt { color: var(--ink-muted); }
+.sw-run-stats dd { margin: 0; font-family: var(--utility); font-variant-numeric: tabular-nums; }
+.sw-run-skip { margin: 8px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); }
+/* 正收益旁边那句「可能只是运气」。**不涂绿也不涂红**——它既不是好消息
+   也不是坏消息，它是读上面那个收益率时必须同时拿在手里的尺子。 */
+.sw-run-luck { margin: 8px 0 0; padding: 6px 9px; border-left: 2px solid var(--amber); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.65; }
+
+.sw-curve { display: block; width: 100%; height: 44px; margin: 10px 0 0; }
+.sw-curve-line { fill: none; stroke: var(--accent-text); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sw-curve-zero { stroke: var(--line); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+.sw-strategies { margin-top: 14px; font-size: var(--fs-meta); }
+.sw-strategies summary { color: var(--ink-body); cursor: pointer; }
+.sw-strategies dl { display: grid; gap: 10px; margin: 10px 0 0; }
+.sw-strategies dt { font-weight: 600; }
+.sw-strategies dd { margin: 3px 0 0; color: var(--ink-muted); line-height: 1.7; }
+.sw-strategies dd em { display: block; margin-top: 3px; font-style: normal; opacity: .85; }
+.sw-caveats ul { margin: 0; padding-left: 18px; }
+.sw-caveats li { margin-bottom: 7px; max-width: 72ch; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+
+/* ── 决策闭环 ────────────────────────────────────────────────────────── */
+.dl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+.dl-enroll { display: flex; align-items: center; gap: 8px; }
+.dl-enroll select { padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); font-size: var(--fs-body); }
+.dl-scan-note { flex-basis: 100%; margin: 0; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
+
+/* 「需要我处理」那两格加一道左缘。**这是整页唯一的强调**——
+   多加几处强调就等于没有强调。 */
+.dl-group--act { border-left: 3px solid var(--accent-fill); }
+.dl-group-means { max-width: 70ch; margin: 0 0 12px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
+.dl-items { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.dl-item { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(90px, .6fr) minmax(140px, 1fr) minmax(0, 1.6fr); align-items: baseline; gap: 6px 14px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); text-align: left; cursor: pointer; }
+.dl-item:hover { background: var(--surface-sunken); }
+.dl-item-name { font-size: var(--fs-body); }
+.dl-item-name em { margin-left: 6px; color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-meta); font-style: normal; }
+.dl-item-price { font-family: var(--utility); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+.dl-item-price i { margin-left: 6px; color: var(--ink-muted); font-size: var(--fs-meta); font-style: normal; }
+.dl-item-plan, .dl-item-note { overflow: hidden; color: var(--ink-muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
+
+.dl-symbol { margin-left: 10px; color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-body); font-style: normal; }
+.dl-state-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; max-width: 70ch; line-height: 1.75; }
+/* 九个状态共用一套中性色。**不给状态染色**：给「已搁置」配灰、给「持仓中」配绿，
+   等于替使用者判了哪一格更好，而九格里没有哪一格是错的。 */
+.dl-chip { padding: 2px 10px; border-left: 3px solid var(--accent-fill); border-radius: 0 var(--r-pill) var(--r-pill) 0; background: var(--surface-sunken); color: var(--ink); font-size: var(--fs-meta); white-space: nowrap; }
+.dl-next { margin: 6px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); }
+
+.dl-trigger { border-left: 3px solid var(--amber); }
+.dl-trigger-line { margin: 0 0 10px; font-family: var(--utility); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+.dl-checklist { margin: 0; padding-left: 20px; }
+.dl-checklist li { margin-bottom: 6px; max-width: 70ch; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
+
+.dl-guards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px 18px; margin: 0 0 14px; padding: 0; list-style: none; }
+.dl-guards li { display: grid; grid-template-columns: 16px 1fr; gap: 2px 7px; font-size: var(--fs-meta); }
+.dl-guards i { color: var(--ink-muted); font-style: normal; }
+.dl-guard--ok i { color: var(--jade); }
+.dl-guards em { grid-column: 2; color: var(--ink-muted); font-style: normal; line-height: 1.6; }
+
+.dl-move { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dl-move-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.dl-move-row select { min-width: 150px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); }
+.dl-move-row input { flex: 1 1 260px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); }
+.dl-blocked { padding: 9px 12px; border-left: 3px solid var(--amber); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); }
+.dl-blocked p { margin: 0; max-width: 70ch; line-height: 1.75; }
+.dl-blocked ul { margin: 7px 0 0; padding-left: 18px; }
+.dl-blocked li { margin-bottom: 4px; line-height: 1.7; }
+
+/* 被禁的边要有文字。**一个灰掉的按钮读起来像 bug，一句理由读起来是原则。** */
+.dl-forbidden { margin-top: 14px; padding: 11px 13px; border: 1px dashed var(--line); border-radius: var(--r-well); }
+.dl-forbidden h4 { margin: 0 0 7px; color: var(--ink-muted); font-size: var(--fs-meta); font-weight: 400; }
+.dl-forbidden p { margin: 0 0 7px; max-width: 72ch; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+.dl-forbidden strong { margin-right: 6px; color: var(--ink); }
+
+.dl-ladder { display: grid; gap: 5px; margin: 0 0 16px; padding: 0; list-style: none; }
+.dl-rung { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(90px, .5fr) minmax(0, 2fr); align-items: baseline; gap: 4px 14px; padding: 8px 11px; border-left: 3px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); }
+.dl-rung--here { border-left-color: var(--accent-fill); }
+.dl-rung--above { border-left-style: dashed; }
+.dl-rung-range { font-family: var(--utility); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+.dl-rung-label { font-size: var(--fs-body); }
+.dl-rung-means { color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.65; }
+.dl-rung-now { grid-column: 1 / -1; color: var(--accent-text); font-size: var(--fs-meta); }
+.dl-band-empty { max-width: 72ch; margin: 0 0 16px; padding: 10px 13px; border-left: 3px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.8; }
+
+/* **按钮不许被 grid 拉满。** `.page-action` 自己是 inline-flex，
+   但它作为 grid 子项会被拉伸到整行宽 —— 一条横贯全屏的绿色长条，
+   看起来像一块背景板而不是一个可以点的东西。 */
+.dl-editor { display: grid; gap: 16px; justify-items: start; }
+.dl-editor > fieldset, .dl-editor > .dl-field, .dl-editor > .form-error { justify-self: stretch; }
+.dl-fieldset { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-card); }
+.dl-fieldset legend { padding: 0 6px; color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-hint { max-width: 72ch; margin: 0 0 11px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+.dl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 16px; }
+.dl-field { display: flex; flex-direction: column; gap: 4px; }
+.dl-field--wide { grid-column: 1 / -1; }
+.dl-field > span { color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-field input, .dl-field textarea { padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-well); background: var(--paper); color: var(--ink); font-family: inherit; font-size: var(--fs-body); }
+.dl-field input[type="number"] { font-family: var(--utility); font-variant-numeric: tabular-nums; }
+.dl-field em { color: var(--ink-muted); font-size: var(--fs-meta); font-style: normal; line-height: 1.6; }
+.dl-req { margin-left: 5px; color: var(--amber); font-size: var(--fs-meta); font-style: normal; }
+
+.dl-history { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.dl-history li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; padding: 9px 11px; border-left: 2px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); }
+.dl-history-when, .dl-history-price { color: var(--ink-muted); font-family: var(--utility); font-variant-numeric: tabular-nums; }
+/* 「从哪一格到哪一格」是这一行的主语，给它正文色；两端的时间与价格退成次级。 */
+.dl-history-move { color: var(--ink); }
+.dl-history-actor { padding: 1px 7px; border-radius: var(--r-pill); background: var(--paper); color: var(--ink-muted); }
+.dl-history li p { flex-basis: 100%; margin: 2px 0 0; max-width: 72ch; color: var(--ink-muted); line-height: 1.7; }
+
+.dl-rate { font-family: var(--utility); font-size: 19px; font-variant-numeric: tabular-nums; }
+.dl-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 18px; margin: 0 0 14px; }
+.dl-counts > div { display: flex; flex-direction: column; gap: 2px; }
+.dl-counts dt { color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-counts dd { margin: 0; font-family: var(--utility); font-size: 21px; font-variant-numeric: tabular-nums; }
+.dl-discipline h4 { margin: 12px 0 7px; font-size: var(--fs-body); }
+.dl-trades { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dl-trades li { display: grid; gap: 2px; padding: 7px 10px; border-left: 2px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); }
+.dl-trades em { color: var(--ink-muted); font-style: normal; line-height: 1.65; }
+.dl-undecidable { margin: 12px 0; font-size: var(--fs-meta); }
+.dl-undecidable summary { color: var(--ink-body); cursor: pointer; }
+.dl-undecidable ul { margin-top: 8px; }
+.dl-sell-note { max-width: 72ch; margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+
+/* ── 涨跌归因 ────────────────────────────────────────────────────────── */
+.ry-headline { max-width: 72ch; margin: 0 0 12px; font-size: 15px; line-height: 1.8; }
+/* 「幅度没到门槛」和那条会计恒等式都是**页面上最该被读到的两句**，
+   所以它们在判据表之前，而不是折在某个角落里。 */
+.ry-floor, .ry-accounting { max-width: 72ch; margin: 0 0 10px; padding: 10px 13px; border-left: 3px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); line-height: 1.85; }
+.ry-floor { border-left-color: var(--amber); }
+
+/* 判据不全的那一份要在结论旁边说清楚少了什么 —— 一份判据不全的结论
+   跟判据齐全的结论长得一样，是最容易误导人的。 */
+.ry-partial { max-width: 72ch; margin: 0 0 10px; padding: 11px 14px; border-left: 3px solid var(--amber); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); line-height: 1.8; }
+.ry-partial p { margin: 0; }
+.ry-partial ul { margin: 7px 0; padding-left: 18px; }
+.ry-partial li { margin-bottom: 3px; color: var(--ink-muted); }
+.ry-enrich { color: var(--ink-muted); }
+
+.ry-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.ry-type { padding: 13px 15px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--paper); opacity: .72; }
+/* 命中的那几类不涂色，**只是不再变淡**。涂色会让"命中"看起来像"推荐"。 */
+.ry-type--hit { border-left: 3px solid var(--accent-fill); opacity: 1; }
+.ry-type header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.ry-type h4 { margin: 0; font-size: var(--fs-body); }
+.ry-score { color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.ry-means { margin: 6px 0 10px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.7; }
+.ry-checks { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.ry-checks li { display: grid; grid-template-columns: 16px 1fr; gap: 2px 7px; font-size: var(--fs-meta); }
+.ry-checks i { color: var(--ink-muted); font-style: normal; }
+.ry-ok i { color: var(--jade); }
+.ry-checks em { grid-column: 2; color: var(--ink-muted); font-family: var(--utility); font-style: normal; line-height: 1.65; }
+.ry-foryou { margin: 11px 0 0; padding-top: 9px; border-top: 1px dashed var(--line); font-size: var(--fs-meta); line-height: 1.75; }
+
+.ry-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 9px 20px; margin: 0; font-size: var(--fs-meta); }
+.ry-facts > div { display: flex; justify-content: space-between; gap: 10px; }
+.ry-facts dt { color: var(--ink-muted); white-space: nowrap; }
+.ry-facts dd { margin: 0; font-family: var(--utility); font-variant-numeric: tabular-nums; text-align: right; }
+.ry-caveat { max-width: 72ch; margin: 14px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+
+.ry-events { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ry-events li { display: grid; grid-template-columns: 78px 28px minmax(0, 1fr); align-items: baseline; gap: 2px 10px; padding: 7px 10px; border-left: 2px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); }
+.ry-event--high { border-left-color: var(--accent-fill); }
+.ry-event-date { color: var(--ink-muted); font-family: var(--utility); }
+.ry-event-rel { color: var(--ink-muted); }
+.ry-event-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ry-events em { grid-column: 3; color: var(--ink-muted); font-style: normal; }
+
+.ry-narrate .ry-note { max-width: 72ch; margin: 10px 0 0; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+.ry-story { margin-top: 14px; padding: 13px 15px; border: 1px solid var(--line); border-radius: var(--r-card); }
+.ry-story p { max-width: 72ch; margin: 0 0 10px; line-height: 1.85; }
+.ry-story h4 { margin: 12px 0 7px; font-size: var(--fs-body); }
+.ry-story ol { margin: 0; padding-left: 20px; }
+.ry-story li { margin-bottom: 5px; max-width: 72ch; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+.ry-meaning { color: var(--ink-muted); font-size: var(--fs-meta); }
+/* 找不到出处的数字**标出来而不是删掉**：它可能是两个数相减算出来的，
+   但值得自己核一眼。跟反方那一页同一条规矩。 */
+.ry-untraceable { padding: 9px 12px; border-left: 3px solid var(--zhu, var(--amber)); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); font-size: var(--fs-meta); line-height: 1.75; }
+.ry-model { color: var(--ink-muted); font-family: var(--utility); font-size: var(--fs-meta); }
+
+@media (max-width: 720px) {
+  .dl-item, .dl-rung, .ry-events li { grid-template-columns: 1fr; }
+  .sw-run-stats { grid-template-columns: 1fr; }
+}
+
+/* ── 同产业链环节的同行 ─────────────────────────────────────────────────
+ * **逐家点名，不摆中位数。** 155 个环节里公司数中位只有 2 —— 两家的中位数
+ * 只是其中一家，而它会长得跟一个统计量一样。
+ */
+.ry-chains { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.ry-chain { padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--paper); }
+/* 判据真正用到的那一组标出来：**别让人以为四组都在起作用**。 */
+.ry-chain--used { border-left: 3px solid var(--accent-fill); }
+.ry-chain header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ry-chain h4 { margin: 0; font-size: var(--fs-body); }
+.ry-chain h4 i { margin: 0 3px; color: var(--ink-muted); font-style: normal; }
+.ry-chain-n { color: var(--ink-muted); font-size: var(--fs-meta); white-space: nowrap; }
+.ry-chain-what { margin: 6px 0 8px; color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.65; }
+.ry-chain-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.ry-chain-list li { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-meta); }
+.ry-chain-list li > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ry-chain-list em { color: var(--ink); font-family: var(--utility); font-style: normal; font-variant-numeric: tabular-nums; }
+.ry-chain-list a { color: var(--ink-body); }
+/* 自己那一行加一道左缘，不加底色——底色会让它看起来像被选中 */
+.ry-chain-self { padding-left: 6px; border-left: 2px solid var(--accent-fill); margin-left: -8px; }
+.ry-chain-note { max-width: 72ch; margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+
+/* 待成交：这一笔的计划 */
+.dl-committed { border-left: 3px solid var(--accent-fill); }
+.dl-order { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 18px; margin: 0; }
+.dl-order > div { display: flex; flex-direction: column; gap: 2px; }
+.dl-order dt { color: var(--ink-muted); font-size: var(--fs-meta); }
+.dl-order dd { margin: 0; font-family: var(--utility); font-size: 18px; font-variant-numeric: tabular-nums; }
+.dl-order-why { max-width: 72ch; margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+
+/* 估值初值的出处。**不摆出来它就是个黑箱** —— 看到「基准 8.84%」时
+   要能立刻知道这不是编的，是它自己最近三年的复合增速。 */
+.vs-seed-note { max-width: 78ch; margin: 10px 0 14px; padding: 10px 13px; border-left: 3px solid var(--line); border-radius: 0 var(--r-well) var(--r-well) 0; background: var(--surface-sunken); color: var(--ink-muted); font-size: var(--fs-meta); line-height: 1.75; }
+.vs-seed-note p { margin: 0; }
+.vs-seed-note ul { margin: 7px 0 0; padding-left: 18px; }
+.vs-seed-note li { margin-bottom: 3px; }
+.vs-seed-note b { display: inline-block; min-width: 3em; margin-right: 6px; color: var(--ink); font-weight: 600; }
+/* 「N 年后营收」：它是用来让假设被证伪的，不是装饰 —— 给它跟每股价值一样的字重 */
+.vs-future { color: var(--ink); font-family: var(--utility); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.vs-implied-live { margin: 6px 0 0; padding-top: 6px; border-top: 1px dashed var(--line); color: var(--ink-muted); font-size: var(--fs-meta); }
+
+/* ── 决策卡：估值建议 / 时间戳 / 对账 ─────────────────────────────────────── */
+
+/* 建议值区块。左边压一道色边，跟"你填的"那几个输入框区分开——
+   **它是建议不是已经生效的数**，长得一样的话人会以为已经存进去了。 */
+.dl-suggest {
+  margin: 14px 0 16px; padding: 14px 16px;
+  border: 1px solid var(--line); border-left: 3px solid var(--accent-fill);
+  border-radius: 10px; background: var(--surface-hover, rgba(127, 127, 127, 0.05));
+}
+.dl-suggest-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.dl-suggest-rows { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.dl-suggest-rows li { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dl-suggest-rows b { min-width: 6em; font-weight: 600; }
+.dl-suggest-rows strong { font-variant-numeric: tabular-nums; min-width: 5em; }
+/* 算式跟着数字走：一个看得见算式的建议值，和一个悄悄填进输入框的默认值不是一回事。 */
+.dl-suggest-rows em { font-style: normal; color: var(--ink-faint); font-size: var(--fs-small); }
+.dl-suggest-note, .dl-suggest-src {
+  margin: 10px 0 0; color: var(--ink-soft); font-size: var(--fs-small); line-height: 1.7;
+}
+.dl-suggest-src { color: var(--ink-faint); }
+
+/* 每块各自的时间戳。一行小字，不抢分量——平时不看，过期时才要紧。 */
+.dl-stamps {
+  list-style: none; margin: 0 0 12px; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px 18px;
+  color: var(--ink-faint); font-size: var(--fs-small);
+}
+.dl-stamps li { display: flex; align-items: baseline; gap: 6px; }
+.dl-stamps b { color: var(--ink-soft); font-weight: 600; }
+.dl-stamps em { font-style: normal; }
+
+/* 过期提醒：价格带依据的那期财报被新的一期顶掉了。 */
+.dl-stale {
+  margin: 0 0 14px; padding: 11px 14px; border-radius: 8px;
+  border-left: 3px solid var(--cinnabar, #bd493a);
+  background: var(--surface-hover, rgba(127, 127, 127, 0.06));
+  color: var(--ink-body); font-size: var(--fs-small); line-height: 1.7;
+}
+
+/* 对账：把你已经写下的几个数摆进同一句话里。 */
+.dl-reconcile {
+  margin: 14px 0 0; padding: 12px 14px; border-radius: 10px;
+  background: var(--surface-hover, rgba(127, 127, 127, 0.05));
+}
+.dl-reconcile h4 { margin: 0 0 8px; font-size: var(--fs-small); color: var(--ink-soft); }
+.dl-reconcile p { margin: 0 0 6px; font-size: var(--fs-small); line-height: 1.75; }
+.dl-reconcile p:last-child { margin-bottom: 0; }
+
+/* 推进条：机器替你写的那一句 / 必须自己写的理由 */
+.dl-move-auto, .dl-move-must {
+  margin: 8px 0 0; font-size: var(--fs-small); line-height: 1.7; color: var(--ink-soft);
+}
+.dl-move-auto em { font-style: normal; color: var(--ink); }
+.dl-move-must { color: var(--ink-body); }
+
+/* 守卫行尾的落点按钮。**一句"去公司档案的逻辑与证据"不算入口** ——
+   差一件事就给一个能直接点的东西：卡上的滚过去并聚焦，别处的带页签跳过去。 */
+.dl-guard-go { margin-top: 4px; align-self: flex-start; white-space: nowrap; }
+
+/* ── 持仓：一只票一行，两个数 ────────────────────────────────────────────────
+   使用者定的模型：只记持有股数和成本价，新增和更新是同一个动作。
+   所以这张表本身就是编辑器——没有"进入编辑模式"这一步。 */
+.holdings-editor { padding: 0 18px 16px; }
+.holdings-table { width: 100%; border-collapse: collapse; }
+.holdings-table th {
+  text-align: left; padding: 8px 10px; font-weight: 600;
+  color: var(--ink-soft); font-size: var(--fs-small);
+  border-bottom: 1px solid var(--line);
+}
+.holdings-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.holdings-table tr:last-child td { border-bottom: none; }
+.holdings-table td em { margin-left: 8px; font-style: normal; color: var(--ink-faint); font-size: var(--fs-small); }
+/* 数字右对齐 + 等宽：成本价和市值要能一眼比大小。 */
+.holdings-num { text-align: right; font-variant-numeric: tabular-nums; }
+.holdings-table input {
+  width: 100%; max-width: 8.5em; padding: 5px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.holdings-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+/* 「存」只在真改过时出现——一个永远可点的保存键会让人不确定存没存过。 */
+.holdings-actions .page-action { padding: 4px 12px; }
+.holdings-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.holdings-add select, .holdings-add input {
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+}
+.holdings-add input { max-width: 9em; }
+.holdings-note {
+  margin: 14px 0 0; color: var(--ink-soft);
+  font-size: var(--fs-small); line-height: 1.75;
+}
+
+/* 窄屏：表格改成卡片式，别让六列挤成一团 */
+@media (max-width: 720px) {
+  .holdings-table, .holdings-table tbody, .holdings-table tr, .holdings-table td { display: block; width: 100%; }
+  .holdings-table thead { display: none; }
+  .holdings-table tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .holdings-table td { border: none; padding: 4px 0; }
+  .holdings-table input { max-width: 100%; text-align: left; }
+  .holdings-actions { justify-content: flex-start; }
+}
+
+/* ── 决策卡：成交登记 ─────────────────────────────────────────────────────────
+   「计划内 / 计划外」唯一的入口。放在价格带下面，因为判定用的就是这两样：
+   成交价落在哪一段、当时卡片停在哪一格。 */
+.dl-fills { margin: 14px 0 0; padding-top: 12px; border-top: 1px dashed var(--line); }
+.dl-fill-list { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 6px; }
+.dl-fill-list li {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-size: var(--fs-small);
+}
+.dl-fill-when { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.dl-fill-list strong { font-variant-numeric: tabular-nums; }
+.dl-fill-list em { font-style: normal; color: var(--ink-soft); }
+/* 计划 vs 实际摆在同一行：这一句就是这条记录的全部意义。 */
+.dl-fill-gap { margin-left: auto; color: var(--ink-faint); }
+.dl-fill-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.dl-fill-form label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-small); color: var(--ink-soft); }
+.dl-fill-form input {
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink); font-variant-numeric: tabular-nums;
+}
+/* 边填边显示偏离——**成交之后再算就晚了**，那时你已经买完了。 */
+.dl-fill-drift { flex-basis: 100%; margin: 0; font-size: var(--fs-small); color: var(--ink-body); }
+.dl-fill-note { margin: 10px 0 0; font-size: var(--fs-small); line-height: 1.7; color: var(--ink-soft); }

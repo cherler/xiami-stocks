@@ -365,3 +365,27 @@ def _no_real_curl(monkeypatch) -> None:
     monkeypatch.setattr(
         disclosure, "_fetch_with_curl",
         lambda url: {"body": b"", "note": "测试里不起 curl（见 conftest._no_real_curl）"})
+
+
+@pytest.fixture(autouse=True)
+def _no_real_assistant_delivery(monkeypatch) -> None:
+    """**测试里的提醒永远送不到真的飞书。**
+
+    助理送提醒的路是 `nanobot trigger <号>` —— 它把话写进本机 ~/.nanobot 的收件箱，
+    网关再推到站主的飞书。这条路不经过 HTTP，上面那两道断网的闸拦不住它。
+    而配置读的是仓根 `.env`：站主在 .env 里配好触发号的那天起，
+    任何一条调了 watch_once(send=True) 的测试都会往他手机上真发一条。
+
+    所以两件事都在这里从结构上挡住：
+    - 配置只读环境变量，**不读 .env**——测试要什么配置自己 setenv；
+    - nanobot 的路径默认指向一个不存在的文件，找不到真命令也就发不出去。
+    """
+    import os
+
+    from stock_decision import assistant
+
+    monkeypatch.setattr(assistant, "_setting", lambda key: os.environ.get(key, "").strip())
+    monkeypatch.delenv("STOCK_ASSISTANT_TRIGGER", raising=False)
+    monkeypatch.delenv("STOCK_ASSISTANT_WATCH", raising=False)
+    monkeypatch.delenv("STOCK_ASSISTANT_SCOPE", raising=False)
+    monkeypatch.setenv("STOCK_ASSISTANT_NANOBOT", "/nonexistent/nanobot-blocked-in-tests")

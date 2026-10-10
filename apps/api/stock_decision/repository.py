@@ -113,6 +113,7 @@ from .schemas import (
     WatchlistImportRow,
     ThesisUpdate,
     TradeCreate,
+    TradeSide,
     TradeUpdate,
 )
 
@@ -1243,11 +1244,12 @@ def store_daily_history(company_id: int, bars: list[dict[str, Any]]) -> int:
             conn.execute(
                 """
                 INSERT INTO price_bars (
-                    symbol, trade_date, close, high, low, volume, amount,
+                    symbol, trade_date, close, open_price, high, low, volume, amount,
                     change_percent, source, refreshed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol, trade_date, source) DO UPDATE SET
                     close = excluded.close,
+                    open_price = excluded.open_price,
                     high = excluded.high,
                     low = excluded.low,
                     volume = excluded.volume,
@@ -1259,6 +1261,11 @@ def store_daily_history(company_id: int, bars: list[dict[str, Any]]) -> int:
                     symbol,
                     trade_date,
                     close,
+                    # 两个日线源给的键都叫 open（东财桥与新浪都是）。
+                    # **取不到就留空，不拿收盘价顶替** —— 用收盘价当开盘价，
+                    # 「开盘卖收盘买」这条策略的收益会恒等于 0，看起来像"没规律"，
+                    # 而真相是这一天根本没数据。
+                    bar.get("open"),
                     bar.get("high"),
                     bar.get("low"),
                     bar.get("volume"),
@@ -2114,7 +2121,22 @@ def _accumulate_positions(trades: list[dict[str, Any]]) -> dict[int, dict[str, A
             if trade.get("price") is not None and float(trade["price"]) > 0:
                 state["average_cost_snapshot"] = float(trade["price"])
 
-        if side == "dividend":
+        if side == "opening":
+            # **覆盖，不累加。** 期初持仓说的是"到这天为止我有 N 股、均价 P"，
+            # 它把这家公司之前那段流水一笔勾销 —— 加上去就变成了凭空多出一倍持仓。
+            #
+            # **"之前"靠的是这个函数开头那一句 sorted((trade_date, id))，
+            # 不是调用处。** 调用处恰恰不能指望：list_portfolios 和 _holdings_exposure
+            # 根本没写 ORDER BY，get_portfolio 和 _company_ledger 写的还是 DESC。
+            # 真按调用处的顺序来，期初持仓会先于旧流水结算，然后旧的买入再加上去
+            # —— 持仓凭空翻倍，而且不报错。动那句 sorted 之前先看这里。
+            #
+            # **已实现盈亏和已收分红不清**：那两件事真的发生过，
+            # 期初持仓只重述当下的持股与成本，无权否认历史上收过的钱。
+            state["shares"] = shares
+            state["cost_value"] = shares * price + fee
+            state["realized_cost"] = 0.0
+        elif side == "dividend":
             # **分红不进 realized_pnl。** 卖出赚的差价与拿着收的现金是两种钱，
             # 合并之后就再也看不出这笔投资是靠差价还是靠现金流回报的。
             cash = trade.get("cash_amount")
@@ -2283,7 +2305,12 @@ def _ensure_default_portfolio(conn: sqlite3.Connection) -> int:
 
 def list_portfolios() -> list[dict[str, Any]]:
     with connection() as conn:
-        _ensure_default_portfolio(conn)
+        # 初次访问仍提供主组合；用户主动清空后，读取列表不能又把它建回来。
+        cleared = conn.execute(
+            f"SELECT 1 FROM user_settings WHERE key = 'portfolios_cleared'{_sw()}"
+        ).fetchone()
+        if not cleared:
+            _ensure_default_portfolio(conn)
         summaries = []
         for row in _rows(conn.execute(f"SELECT * FROM portfolios WHERE 1=1{_sw()} ORDER BY id").fetchall()):
             trades = _trade_records(conn.execute(f"{_TRADE_SELECT} WHERE t.portfolio_id = ?{_sw(chr(112))}", (row["id"],)).fetchall())
@@ -2322,28 +2349,6 @@ def create_portfolio(payload: PortfolioCreate) -> dict[str, Any]:
     return _portfolio_summary(row or {}, [], [], 0)
 
 
-def scan_trade_screenshot(image_bytes: bytes, media_type: str, hint: str = "",
-                          company_id: int | None = None) -> dict[str, Any]:
-    """读一张券商截图，返回待确认的流水。**不写库。**"""
-
-    from .ledger_scan import scan_screenshot
-
-    with connection() as conn:
-        # **这里原来漏了数据域过滤**，整张 companies 表都进了匹配名单：
-        # 落库那一步有 _sw() 兜着所以写不进去，但「代码 600519」这类匹配说明
-        # 会指向别人的档案，而且别人研究了哪些票会从这里泄出去。
-        roster = _rows(conn.execute(
-            f"SELECT id, symbol, name FROM companies WHERE 1=1{_sw()} ORDER BY id").fetchall())
-    return scan_screenshot(image_bytes, media_type, roster, hint, company_id=company_id)
-
-
-# Pydantic 的原文是英文（"Input should be greater than 0"）。这批错误会直接摆在
-# 读图确认页上，逐条挨着中文的流水显示——夹一句英文进去，人第一反应是"系统坏了"。
-_FIELD_LABEL = {"shares": "股数", "price": "成交价", "cash_amount": "到账金额", "fee": "费用",
-                "trade_date": "日期", "company_id": "公司", "rationale": "理由",
-                "weight_percent": "仓位占比", "side": "方向"}
-
-
 def _readable_validation(exc: ValidationError) -> str:
     first = exc.errors()[0]
     field = next((str(part) for part in reversed(first.get("loc") or ()) if isinstance(part, str)), "")
@@ -2368,65 +2373,6 @@ def _readable_validation(exc: ValidationError) -> str:
     return f"{label}：{first.get('msg', '填写有误')}"
 
 
-def mark_known_trades(portfolio_id: int, rows: list[dict[str, Any]]) -> list[int]:
-    """这批读出来的流水里，哪几条账本里**已经有了**。
-
-    补录时最容易出的事：上次只记了勾上的那些，这次回来想补剩下的，
-    一个「全选」就把已经记过的又记一遍。而账本里两笔一模一样的交易，
-    事后没有任何办法分辨哪一笔是多的——**它不会报错，只会让成本价一直偏**。
-
-    判据是「同组合·同公司·同日·同方向·同价·同量」。**只标记，不拦截**：
-    同一天拆单成交出两笔完全相同的记录是真会发生的，替人决定不记就是替人做主。
-    """
-    with connection() as conn:
-        existing = {
-            (r["company_id"], str(r["trade_date"]), r["side"],
-             None if r["shares"] is None else round(float(r["shares"]), 4),
-             None if r["price"] is None else round(float(r["price"]), 4),
-             None if r["cash_amount"] is None else round(float(r["cash_amount"]), 2))
-            for r in conn.execute(
-                f"""SELECT company_id, trade_date, side, shares, price, cash_amount
-                    FROM trades WHERE portfolio_id = ? AND portfolio_id IN
-                    (SELECT id FROM portfolios WHERE 1=1{_sw()})""", (portfolio_id,)).fetchall()}
-
-    def key(row: dict[str, Any]):
-        def num(value, digits):
-            return None if value is None else round(float(value), digits)
-        return (row.get("company_id"), str(row.get("trade_date") or ""), row.get("side"),
-                num(row.get("shares"), 4), num(row.get("price"), 4), num(row.get("cash_amount"), 2))
-
-    return [index for index, row in enumerate(rows) if key(row) in existing]
-
-
-def keep_scan_rows(trades: list[dict[str, Any]]) -> int:
-    """记完之后，把还没记的那几条存回读图任务里；一条不剩就把结果清掉。
-
-    **此前记完再进来，同一批流水原样还在。** 那个"回来还能接上"是有意做的
-    （读图在服务端跑几分钟，切页面不该白跑），但它没有区分"还没记"和"已经记过"——
-    于是点两次就记两遍，而账本里两笔一模一样的交易，事后没有任何办法分辨哪笔是多的。
-    """
-    with connection() as conn:
-        row = conn.execute(
-            f"""SELECT id, result_json FROM background_jobs
-                WHERE kind = 'ledger_scan' AND target_id = 0{_sw()}
-                ORDER BY id DESC LIMIT 1""").fetchone()
-        if not row:
-            return 0
-        if not trades:
-            conn.execute("UPDATE background_jobs SET result_json = NULL, note = ? WHERE id = ?",
-                         ("这批流水已经全部处理完了。", row["id"]))
-            return 0
-        try:
-            payload = json.loads(row["result_json"] or "{}")
-        except (TypeError, ValueError):
-            payload = {}
-        payload["trades"] = trades
-        conn.execute("UPDATE background_jobs SET result_json = ?, note = ? WHERE id = ?",
-                     (json.dumps(payload, ensure_ascii=False, default=str),
-                      f"还剩 {len(trades)} 条没记。", row["id"]))
-        return len(trades)
-
-
 def delete_trade(trade_id: int) -> bool:
     """删掉一笔交易。
 
@@ -2445,34 +2391,87 @@ def delete_trade(trade_id: int) -> bool:
                 (SELECT id FROM portfolios WHERE 1=1{_sw()})""", (trade_id,)).rowcount)
 
 
-def create_trades_batch(portfolio_id: int, payloads: list[Any]) -> dict[str, Any]:
-    """批量确认读图结果。
+def purge_company_trades(portfolio_id: int, company_ids: list[int]) -> dict[str, Any]:
+    """把某几家公司在这个组合里的流水整段删掉。
 
-    **逐条独立成败**，不做「一条错全部回滚」：截图里十条有一条日期读错，
-    因为它把另外九条也退回去，用户就得整批重录——那正是读图想省掉的事。
-    每条的失败原因单独返回，改完再补那一条。
+    **为什么需要批量，而不是一条条删。** 手工流水账会烂在一个特定的形态上：
+    记了一段，停了半年，中间又买卖过。这时候逐条修是修不回来的 —— 缺的那几笔
+    你自己也想不起来了。唯一能回到"账对得上"的路是**把这家公司翻篇重来**：
+    整段删掉，再用一条期初持仓（TradeSide.opening）声明现在手上有多少。
+    实测这个库里格力 34 条、平安 5 条，逐条删要点 39 次确认。
+
+    **为什么按公司而不是按组合。** 两只票只有一只烂了，清空整个组合会把
+    好的那只也一起赔进去。
+
+    **返回删掉了多少条，而且调用方必须显示它。** 静默成功的删除是最危险的一类：
+    company_ids 里混进一个不属于你的 id，或者组合选错了，删掉 0 条和删掉 34 条
+    在界面上长得一模一样。
+
+    不做软删，理由同 delete_trade：账本按流水推导持仓，"标记为已删"的流水
+    要么参与计算（那就没删）、要么不参与（那跟删掉没区别）。
+    删掉的内容在 record_revisions 里仍然留痕。
     """
+    if not company_ids:
+        return {"deleted": 0, "companies": []}
+    with connection() as conn:
+        portfolio = conn.execute(
+            f"SELECT id FROM portfolios WHERE id = ?{_sw()}", (portfolio_id,)).fetchone()
+        if not portfolio:
+            return {"deleted": 0, "companies": [], "missing_portfolio": True}
+        placeholders = ",".join("?" for _ in company_ids)
+        # **先查再删**：删完之后就问不出"删掉的是哪几家、各几条"了，
+        # 而那正是用户确认自己没点错的唯一依据。
+        before = _rows(conn.execute(
+            f"""SELECT t.company_id, c.name AS company_name, c.symbol, COUNT(*) AS n
+                FROM trades t JOIN companies c ON c.id = t.company_id
+                WHERE t.portfolio_id = ? AND t.company_id IN ({placeholders})
+                GROUP BY t.company_id, c.name, c.symbol""",
+            (portfolio_id, *company_ids)).fetchall())
+        deleted = conn.execute(
+            f"""DELETE FROM trades WHERE portfolio_id IN
+                    (SELECT id FROM portfolios WHERE id = ?{_sw()})
+                AND company_id IN ({placeholders})""",
+            (portfolio_id, *company_ids)).rowcount
+    return {
+        "deleted": int(deleted or 0),
+        "companies": [
+            {"company_id": r["company_id"], "name": r["company_name"],
+             "symbol": r["symbol"], "trades": r["n"]}
+            for r in before
+        ],
+    }
 
-    created: list[dict[str, Any]] = []
-    failed: list[dict[str, Any]] = []
-    for index, raw in enumerate(payloads):
-        # **校验放在循环里，不放在请求模型上。** 放在模型上的话一条坏行会让
-        # Pydantic 在进这个函数之前就 422 掉整批，上面那句「逐条独立成败」就是空话。
-        try:
-            payload = raw if isinstance(raw, TradeCreate) else TradeCreate.model_validate(raw)
-        except ValidationError as exc:
-            failed.append({"index": index, "error": _readable_validation(exc)})
-            continue
-        try:
-            trade = create_trade(portfolio_id, payload)
-            if trade is None:
-                failed.append({"index": index, "error": "组合不存在"})
-            else:
-                created.append(trade)
-        except LedgerError as exc:
-            failed.append({"index": index, "error": str(exc)})
-    return {"created": created, "failed": failed,
-            "note": f"记入 {len(created)} 条" + (f"，{len(failed)} 条没记（原因见下）" if failed else "。")}
+
+def delete_portfolio(portfolio_id: int) -> dict[str, Any]:
+    """删掉一个组合。**连里面的持仓一起删，删了就回不来。**
+
+    此前根本删不掉（`/portfolios/{id}` 只有 GET 和 PATCH），
+    于是一个手滑建出来的空组合会永远杵在页签上。
+
+    **不挡"里面还有东西"**：真要删一个有持仓的组合是合法意图，
+    挡住只会逼人先一只只删干净再回来删组合。但**返回它带走了多少条**——
+    删一个空组合和删掉一个装着二十年记录的组合，在界面上长得一模一样。
+
+    删最后一个组合也放行：账本空着是一种合法状态（页面会说「还没有组合」），
+    而拦住它等于强迫人留一个自己不想要的东西。
+    """
+    with connection() as conn:
+        row = conn.execute(
+            f"SELECT id, name FROM portfolios WHERE id = ?{_sw()}", (portfolio_id,)).fetchone()
+        if not row:
+            return {"deleted": False, "name": "", "holdings": 0}
+        holdings = int(conn.execute(
+            "SELECT COUNT(DISTINCT company_id) AS n FROM trades WHERE portfolio_id = ?",
+            (portfolio_id,)).fetchone()["n"])
+        conn.execute("DELETE FROM trades WHERE portfolio_id = ?", (portfolio_id,))
+        conn.execute(f"DELETE FROM portfolios WHERE id = ?{_sw()}", (portfolio_id,))
+        if not conn.execute(f"SELECT 1 FROM portfolios WHERE 1=1{_sw()} LIMIT 1").fetchone():
+            conn.execute(
+                "INSERT INTO user_settings (user_id, key, value, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (_stamp(), "portfolios_cleared", "true", now_iso()),
+            )
+    return {"deleted": True, "name": row["name"], "holdings": holdings}
 
 
 def update_portfolio(portfolio_id: int, payload: "PortfolioUpdate") -> dict[str, Any] | None:
@@ -2520,6 +2519,8 @@ AUTOMATIC_RATIONALE = {
     "dividend": "现金分红到账，非主动操作。",
     "bonus": "送股/转增到账，非主动操作。",
     "rights": "参与配股。",
+    # 期初持仓不是一个决定，是一次对账 —— 没有"当时的想法"可写。
+    "opening": "期初持仓对账：以券商账户的当前持股与成本为准。",
 }
 
 
@@ -2547,12 +2548,50 @@ def _validate_trade(payload: TradeCreate, amount_mode: str) -> None:
         if not payload.shares:
             raise LedgerError("送股/转增请填写增加的股数。")
         return
+    if side == "opening":
+        # 两个数都必须有：只给股数不给均价，成本就是 0，账面会显示无穷大的浮盈。
+        if not payload.shares:
+            raise LedgerError("期初持仓请填写现在持有多少股。")
+        if not payload.price or payload.price <= 0:
+            raise LedgerError("期初持仓请填写每股成本价（券商 APP 上的「成本价」）。")
+        return
     if not payload.shares:
         raise LedgerError("请填写股数。")
     if payload.price is None:
         raise LedgerError("请填写成交价。")
     if payload.price <= 0:
         raise LedgerError("成交价要大于 0。")
+
+
+def set_holding(portfolio_id: int, company_id: int,
+                shares: float, cost_price: float) -> dict[str, Any] | None:
+    """把一只票的持仓设成「N 股、成本价 P」。**新增和更新是同一个动作。**
+
+    使用者定的模型（2026-09-23）：
+
+    > 持仓：只记持有股票数，只有一个数，新增和更新。
+    > 价格也是一个更新（采用成本价，更新）。
+
+    所以这里没有"加仓""减仓"，只有"现在是多少"。填 500 股就是 500 股，
+    不管之前写的是多少 —— 跟券商 APP 上那一行对齐，照抄两个数就完事。
+
+    **底下仍然落成一条 opening 流水**，不是新开一张表。两个理由：
+    持仓本来就是从流水推出来的（`_build_positions`），另起一套会出现
+    "两个地方说的持仓不一样"；而 opening 的语义正好是"覆盖之前那段"。
+    副作用是每改一次多一行历史 —— 那是**好事**，你上次写的是多少还查得到。
+    """
+    return create_trade(portfolio_id, TradeCreate(
+        company_id=company_id, side=TradeSide.opening, trade_date=date.today(),
+        shares=shares, price=cost_price, rationale=""))
+
+
+def drop_holding(portfolio_id: int, company_id: int) -> dict[str, Any]:
+    """把一只票从持仓里去掉。**连它的历史一起删，不是记一笔卖出。**
+
+    记卖出是"我卖了"，删除是"这行不该在这儿"——两件事完全不同，
+    而这个模型里没有交易，只有"现在持有什么"，所以删就是删干净。
+    """
+    return purge_company_trades(portfolio_id, [company_id])
 
 
 def create_trade(portfolio_id: int, payload: TradeCreate) -> dict[str, Any] | None:
@@ -5060,6 +5099,10 @@ def company_valuation(company_id: int) -> dict[str, Any] | None:
         "pe_band": facts["pe_band"], "current_pe": facts.get("current_pe"),
         "seeded_from": ("你保存的假设" if saved else
                         "还没填过——下面是按这家公司自己的历史给的初值，不是推荐值"),
+        # 每个初值是从哪个数来的。**摆在输入框旁边，不然它就是个黑箱**：
+        # 使用者看到「基准 8.84%」时，必须能立刻知道这 8.84 不是编的，
+        # 是他这家公司最近三年的复合增速。
+        "seed_sources": sc.seed_sources(facts["history"]),
     })
     return view
 
@@ -10125,6 +10168,162 @@ def create_generated_industry_chain_theme(draft: dict[str, Any]) -> dict[str, An
     return get_industry_chain(theme_id)  # type: ignore[return-value]
 
 
+def industry_chain_compare(theme_id: int) -> dict[str, Any] | None:
+    """一张底图上,把每个环节里的公司并排摊开看估值与盈利。
+
+    为什么要有这个:市面上的行业分类(申万、证监会)是按公司主营分的,
+    分不出「同一种材料在两条链上是两个市场」这类事——铜箔在锂电和 PCB、
+    玻璃在光伏和显示,都是同一批公司面对完全不同的需求曲线。
+    底图把公司挂在环节上,这里就能按环节横排。
+
+    行情与财务取自 `market_universe`(全市场底座,调度器每 30 分钟刷新),
+    没有匹配到的公司照样列出来、指标留空——**宁可空着,也不要悄悄把它从名单里删掉**。
+    """
+    with connection() as conn:
+        theme = _one_or_none(conn.execute(
+            f"SELECT id, name, description FROM industry_chain_themes WHERE id = ?{_sw()}", (theme_id,)
+        ).fetchone())
+        if theme is None:
+            return None
+        rows = _rows(conn.execute(
+            f"""SELECT s.name AS stage, s.stage_order, n.id AS node_id, n.name AS node,
+                       n.node_order, n.description AS node_what,
+                       n.market_size_cny_yi, n.market_size_basis, n.market_size_source_url,
+                       c.id AS company_id, c.symbol, c.name AS company,
+                       u.price, u.pe_ttm, u.pb, u.total_market_cap,
+                       u.revenue, COALESCE(u.annual_net_profit, u.net_profit) AS net_profit,
+                       COALESCE(u.annual_roe, u.roe) AS roe,
+                       COALESCE(u.annual_gross_margin, u.gross_margin) AS gross_margin,
+                       u.revenue_growth, u.net_profit_growth, u.dividend_yield,
+                       u.change_20d, u.change_60d, u.ytd_change,
+                       u.sw_level1, u.sw_level2, u.fundamental_as_of,
+                       p.detail, p.source_url, p.verification
+                FROM industry_chain_company_positions p
+                JOIN industry_chain_nodes n ON n.id = p.node_id
+                JOIN industry_chain_stages s ON s.id = n.stage_id
+                JOIN companies c ON c.id = p.company_id
+                LEFT JOIN market_universe u ON u.symbol = c.symbol
+                WHERE p.theme_id = ?{_sw('p')}
+                ORDER BY s.stage_order, n.node_order, COALESCE(u.total_market_cap, -1) DESC""",
+            (theme_id,)
+        ).fetchall())
+
+    # `market_universe` 的 change_60d / ytd_change 要等同步任务攒够交易日才有值(本机现在整列是空的),
+    # 但这批公司都在研究池里,`price_bars` 有它们的前复权日线——能自己算就别让整列空着。
+    # 口径与档案页 `_market_history_summary` 一致:最新收盘 ÷ 区间起点收盘 - 1,不含分红再投资。
+    symbols = sorted({row["symbol"] for row in rows if row["symbol"]})
+    bars_by_symbol: dict[str, list[tuple[str, float]]] = {}
+    if symbols:
+        today = date.today()
+        # 年初至今要从 1 月 1 日起算;60 个交易日往前推到年初可能不够(年头几个月),所以再多取 200 天
+        window_start = min(date(today.year, 1, 1), today - timedelta(days=200)).isoformat()
+        placeholders = ",".join("?" for _ in symbols)
+        with connection() as conn:
+            bar_rows = _rows(conn.execute(
+                f"""SELECT symbol, trade_date, close FROM price_bars
+                     WHERE symbol IN ({placeholders}) AND trade_date >= ? AND close IS NOT NULL
+                     ORDER BY symbol, trade_date""",
+                (*symbols, window_start),
+            ).fetchall())
+        for bar in bar_rows:
+            bars_by_symbol.setdefault(bar["symbol"], []).append((bar["trade_date"], float(bar["close"])))
+
+    def _changes(symbol: str) -> tuple[float | None, float | None]:
+        """(近 60 个交易日, 年初至今)。攒不够就返回 None——别拿区间不足的数冒充涨跌幅。"""
+        bars = bars_by_symbol.get(symbol) or []
+        if not bars:
+            return None, None
+        latest_date, latest_close = bars[-1]
+        idx = len(bars) - 61
+        d60 = _percent_change(latest_close, bars[idx][1]) if idx >= 0 else None
+        year_start = f"{date.fromisoformat(latest_date).year}-01-01"
+        ytd_ref = next((close for trade_date, close in bars if trade_date >= year_start), None)
+        return d60, _percent_change(latest_close, ytd_ref)
+
+    def _median(values: list[float]) -> float | None:
+        vals = sorted(v for v in values if v is not None)
+        if not vals:
+            return None
+        mid = len(vals) // 2
+        return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+    nodes: list[dict[str, Any]] = []
+    index: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        node = index.get(row["node_id"])
+        if node is None:
+            node = {
+                "node_id": row["node_id"], "node": row["node"], "stage": row["stage"],
+                "what": row["node_what"], "companies": [],
+                "market_size_cny_yi": row["market_size_cny_yi"],
+                "market_size_basis": row["market_size_basis"] or "",
+                "market_size_source_url": row["market_size_source_url"] or "",
+            }
+            index[row["node_id"]] = node
+            nodes.append(node)
+        company = {
+            k: row[k] for k in (
+                "company_id", "symbol", "company", "price", "pe_ttm", "pb", "total_market_cap",
+                "revenue", "net_profit", "roe", "gross_margin", "revenue_growth", "net_profit_growth", "dividend_yield",
+                "change_20d", "change_60d", "ytd_change", "sw_level1", "sw_level2",
+                "fundamental_as_of", "detail", "source_url", "verification",
+            )
+        }
+        if company["change_60d"] is None or company["ytd_change"] is None:
+            d60, ytd = _changes(row["symbol"])
+            company["change_60d"] = company["change_60d"] if company["change_60d"] is not None else d60
+            company["ytd_change"] = company["ytd_change"] if company["ytd_change"] is not None else ytd
+        node["companies"].append(company)
+    for node in nodes:
+        co = node["companies"]
+        caps = [c["total_market_cap"] for c in co if c["total_market_cap"] is not None]
+        node["count"] = len(co)
+        node["market_cap_sum"] = sum(caps) if caps else None
+        # 合计营收/合计净利是「这一环在整条链里占多大、赚走多少」的直接答案;
+        # 中位数回答「贵不贵」,合计额回答「利润落在哪一环」,两个问题不能用同一个数。
+        revenues = [c["revenue"] for c in co if c["revenue"] is not None]
+        profits = [c["net_profit"] for c in co if c["net_profit"] is not None]
+        node["revenue_sum"] = sum(revenues) if revenues else None
+        node["net_profit_sum"] = sum(profits) if profits else None
+        node["revenue_count"] = len(revenues)
+        node["profit_count"] = len(profits)
+        # 环节市销率:合计市值 ÷ 合计营收。分子分母的公司集合可能不一样(有的没市值、有的没营收),
+        # 所以只在两边都齐的公司上算,不齐就不给数——半边的比值没有意义。
+        both = [c for c in co if c["total_market_cap"] is not None and c["revenue"]]
+        node["ps"] = round(sum(c["total_market_cap"] for c in both) / sum(c["revenue"] for c in both), 2) if both else None
+        node["ps_count"] = len(both)
+        node["pe_median"] = _median([c["pe_ttm"] for c in co])
+        node["pb_median"] = _median([c["pb"] for c in co])
+        node["roe_median"] = _median([c["roe"] for c in co])
+        node["gross_margin_median"] = _median([c["gross_margin"] for c in co])
+        # 同一环节里有几家拿不到行情:这个数要露出来,否则中位数会被静默地算在少数几家上
+        node["missing_quote"] = sum(1 for c in co if c["price"] is None)
+        # 环节拥挤度 = 这一环 A 股合计市值 ÷ 这一环的市场盘子。
+        # 分子是「中国上市公司这部分」,分母常是全球盘子——所以它不是估值倍数,
+        # 是「这批公司被定价成要吃下这个市场的多少倍」。口径写在 market_size_basis 里,必须一起看。
+        size = node["market_size_cny_yi"]
+        node["crowding"] = round(node["market_cap_sum"] / 1e8 / size, 2) if size and node["market_cap_sum"] else None
+    # 每一列真正有几个值。
+    # 本机底座里 `ytd_change` / `change_60d` 要等同步任务攒够交易日才有,现在整列是空的;
+    # 一列全是「—」和「这批公司都不涨」长得一模一样,所以把填充数一起交出去,由前端决定收起哪列并说明原因。
+    all_co = [c for n in nodes for c in n["companies"]]
+    coverage = {
+        field: sum(1 for c in all_co if c[field] is not None)
+        for field in (
+            "price", "pe_ttm", "pb", "total_market_cap", "revenue", "net_profit", "roe", "gross_margin",
+            "revenue_growth", "net_profit_growth", "dividend_yield",
+            "change_20d", "change_60d", "ytd_change",
+        )
+    }
+    return {
+        "theme_id": theme["id"], "theme": theme["name"], "description": theme["description"],
+        "node_count": len(nodes),
+        "company_count": sum(n["count"] for n in nodes),
+        "coverage": coverage,
+        "nodes": nodes,
+    }
+
+
 def get_industry_chain(theme_id: int) -> dict[str, Any] | None:
     with connection() as conn:
         theme = _one_or_none(conn.execute(
@@ -10139,7 +10338,8 @@ def get_industry_chain(theme_id: int) -> dict[str, Any] | None:
         ).fetchall())
         nodes = _rows(conn.execute(
             f"""SELECT id, theme_id, stage_id, parent_id, name, node_type, description,
-                       source_name, source_url, verification, node_order
+                       source_name, source_url, verification, node_order,
+                       market_size_cny_yi, market_size_basis, market_size_source_url
                 FROM industry_chain_nodes WHERE theme_id = ?{_sw()}
                 ORDER BY node_order, id""",
             (theme_id,),
@@ -10218,6 +10418,21 @@ def add_industry_chain_stage(theme_id: int, payload: dict[str, Any]) -> dict[str
     return get_industry_chain(theme_id)
 
 
+def _market_size_fields(payload: dict[str, Any]) -> tuple[float | None, str, str]:
+    """(盘子, 口径, 出处)。三缺一就整组作废——没有口径与出处的分母，算出来的拥挤度看着像个数，其实不知道在比什么。"""
+
+    raw = payload.get("market_size_cny_yi")
+    basis = str(payload.get("market_size_basis") or "").strip()[:300]
+    url = str(payload.get("market_size_source_url") or "").strip()[:1000]
+    try:
+        value = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        value = None
+    if value is None or value <= 0 or not basis or not url:
+        return None, "", ""
+    return value, basis, url
+
+
 def add_industry_chain_node(theme_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
     timestamp = now_iso()
     scope = _stamp()
@@ -10251,13 +10466,15 @@ def add_industry_chain_node(theme_id: int, payload: dict[str, Any]) -> dict[str,
             cursor = conn.execute(
                 """INSERT INTO industry_chain_nodes
                    (user_id, theme_id, stage_id, parent_id, name, node_type, description,
-                    source_name, source_url, verification, node_order, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_name, source_url, verification, node_order,
+                    market_size_cny_yi, market_size_basis, market_size_source_url,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (scope, theme_id, stage_id, parent_id,
                  name, str(payload.get("node_type") or "产品")[:20],
                  str(payload.get("description") or "").strip(), str(payload.get("source_name") or "").strip(),
                  str(payload.get("source_url") or "").strip(), _industry_chain_verification(payload),
-                 int(order), timestamp, timestamp),
+                 int(order), *_market_size_fields(payload), timestamp, timestamp),
             )
             node_id = int(cursor.lastrowid)
             if upstream_id is not None:
@@ -10277,6 +10494,28 @@ def add_industry_chain_node(theme_id: int, payload: dict[str, Any]) -> dict[str,
             )
         except integrity_errors() as exc:
             raise LedgerError("这个阶段里已经有同名节点，或连接已经存在。") from exc
+    return get_industry_chain(theme_id)
+
+
+def set_industry_chain_node_market_size(theme_id: int, node_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """给已经建好的节点补(或清掉)市场盘子。
+
+    盘子来自本仓之外——「地球运转图谱」那边每条都指回一句带出处的原文;
+    这里只负责存,所以口径(basis)和出处(url)缺一不可,由 _market_size_fields 一起判。
+    """
+
+    value, basis, url = _market_size_fields(payload)
+    with connection() as conn:
+        if not conn.execute(
+                f"SELECT 1 FROM industry_chain_nodes WHERE id = ? AND theme_id = ?{_sw()}",
+                (node_id, theme_id)).fetchone():
+            return None
+        conn.execute(
+            f"""UPDATE industry_chain_nodes
+                SET market_size_cny_yi = ?, market_size_basis = ?, market_size_source_url = ?, updated_at = ?
+                WHERE id = ? AND theme_id = ?{_sw()}""",
+            (value, basis, url, now_iso(), node_id, theme_id),
+        )
     return get_industry_chain(theme_id)
 
 
@@ -11289,3 +11528,1459 @@ def company_fundraising(company_id: int) -> list[dict[str, Any]]:
     for row in rows:
         row["source_pages"] = json.loads(row["source_pages"] or "[]")
     return rows
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 我的判断 · 三件新东西的取数层
+#
+# 计算全部在 swing.py / decision_loop.py / rally.py 里，那三个模块不碰数据库；
+# 这里只负责把库里的行喂给它们。分开是为了让判据能脱离库单独测——
+# 「给一组事实必须永远给同一个答案」这件事，只有在函数不查库时才验得了。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _bars_for(conn, symbol: str, limit: int = 1500) -> list[dict[str, Any]]:
+    """一只票的日线，按日期升序。**默认只取最近 1500 根**：
+
+    库里最长的一只有 8286 根（1992 年至今），全取回来做 250 天的统计
+    纯属浪费；而窗口最大是 500，1500 根留足了三倍余量。
+    """
+    rows = conn.execute(
+        """SELECT trade_date, close, open_price, high, low, volume
+           FROM price_bars WHERE symbol = ?
+           ORDER BY trade_date DESC LIMIT ?""", (symbol, limit)).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+# ── 一、做 T 回测 ───────────────────────────────────────────────────────────
+
+
+def swing_study(company_id: int, *, window: int = 250, trigger_percent: float = 1.0,
+                base_shares: int = 10000, tactical_percent: float = 20.0,
+                costs: dict[str, float] | None = None) -> dict[str, Any] | None:
+    """一只票的做 T 规律检验 + 四条策略的机器模拟。
+
+    **底仓股数默认 10000 而不是从账本里读**，是刻意的：这一页要能在你还没买
+    之前就回答「这只票值不值得做 T」。真买了之后可以把实际股数填进去，
+    但结论里最要紧的那几个（有没有规律、天花板多高、打平要多少价差）
+    跟股数无关——它们是这只票自己的性质。
+    """
+    from . import swing
+
+    with connection() as conn:
+        row = conn.execute(
+            f"SELECT id, symbol, name FROM companies WHERE id = ?{_sw()}", (company_id,)).fetchone()
+        if not row:
+            return None
+        bars = _bars_for(conn, row["symbol"])
+        # 账本里实际持有多少股。**只用来提示，不替换入参**——
+        # 页面把它显示成「你实际持有 N 股，要不要按这个数重算」。
+        held = conn.execute(
+            f"""SELECT t.company_id, t.side, t.shares FROM trades t
+                JOIN portfolios p ON p.id = t.portfolio_id
+                WHERE t.company_id = ?{_sw('p')}""", (company_id,)).fetchall()
+
+    shares_held = 0.0
+    for trade in held:
+        if trade["shares"] is None:
+            continue
+        if trade["side"] == "buy":
+            shares_held += float(trade["shares"])
+        elif trade["side"] == "sell":
+            shares_held -= float(trade["shares"])
+        elif trade["side"] == "bonus":
+            shares_held += float(trade["shares"])
+
+    view = swing.compare(bars, window=window, trigger_percent=trigger_percent,
+                         base_shares=base_shares, tactical_percent=tactical_percent,
+                         costs=costs)
+    missing_open = sum(1 for bar in bars[-window:] if bar.get("open_price") is None) if window \
+        else sum(1 for bar in bars if bar.get("open_price") is None)
+    view.update({
+        "company_id": company_id,
+        "symbol": row["symbol"],
+        "name": row["name"],
+        "bars_available": len(bars),
+        "window": window,
+        "windows": swing.WINDOWS,
+        "trigger_percent": trigger_percent,
+        "base_shares": base_shares,
+        "tactical_percent": tactical_percent,
+        "shares_held": shares_held if shares_held > 0 else None,
+        # **缺开盘价要显式报出来。** 三条真实策略全靠它；不报的话页面上
+        # 只会看到「规则一次都没触发」，而那句话跟"真的没触发"长得一样。
+        "missing_open_days": missing_open,
+    })
+    return view
+
+
+# ── 二、决策闭环 ────────────────────────────────────────────────────────────
+
+
+def _card_row(conn, company_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        f"SELECT * FROM decision_cards WHERE company_id = ?{_sw()}", (company_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _as_number(value: Any) -> float | None:
+    """卡片上的数字字段可能是数、可能是字符串、也可能是空。
+
+    **空和 0 要分开**：计划成交价没填是"还没决定"，填 0 是填错了——
+    合成一个值的话，对账那句话会对着一个不存在的计划价去算偏离。
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_json(raw: Any) -> dict[str, Any]:
+    """存进去的是 JSON 文本，取出来要是字典。**坏了就当空的，不抛。**
+
+    这几列都有 DEFAULT '{}'，但老行、手工改过的行、以及迁移当中的行
+    都可能是空字符串或 NULL —— 为这个让整张卡片 500 掉不值得。
+    """
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _decode_card(row: dict[str, Any]) -> dict[str, Any]:
+    card = dict(row)
+    card["bands"] = _decode_json(card.get("bands"))
+    card["position_plan"] = _decode_json(card.get("position_plan"))
+    card["order_plan"] = _decode_json(card.get("order_plan"))
+    card["block_stamps"] = _decode_json(card.get("block_stamps"))
+    return card
+
+
+def base_per_share(view: dict[str, Any] | None) -> float | None:
+    """估值视图里的「基准每股价值」。取不到返回 None，**不退回悲观或乐观**。
+
+    三个情景里只有基准能当价格带的锚，理由写在 bands.py 开头：
+    乐观值（把历史最好的一年复合五年）会高出现价十倍，悲观值低于现价八成，
+    两端都是边界条件，不是价格。
+    """
+    if not view or not view.get("ready"):
+        return None
+    for row in view.get("scenarios") or []:
+        if row.get("key") == "base":
+            value = row.get("per_share")
+            return float(value) if value not in (None, "") else None
+    return None
+
+
+def _bands_provenance(company_id: int) -> dict[str, Any]:
+    """这组价格带定下来的时候，估值那边是什么样子。
+
+    只记三个数：**哪一期财报**（过期与否全看它）、当时的基准每股价值、
+    估值是什么时候存的。够回答「这组数还算不算数」，不够的部分回估值页看。
+
+    **在 connection() 外面调用**：它自己要开一次库。
+    """
+    view = company_valuation(company_id)
+    if not view:
+        return {}
+    return {
+        "valuation_saved_at": view.get("saved_at"),
+        "base_report_date": view.get("base_report_date"),
+        "per_share_base": base_per_share(view),
+    }
+
+
+def _guard_facts(conn, company_id: int, card: dict[str, Any] | None) -> dict[str, bool]:
+    """每一条守卫查一次库。**这里是守卫与真实数据之间唯一的接缝。**
+
+    写成一个函数而不是散在各处，是因为守卫多了之后，漏查一条的表现是
+    「那一格永远进不去」或者「随便就进去了」，两种都不报错。
+    """
+    from . import decision_loop as loop
+
+    # **子表要用 _swc() 不是 _sw()。** theses 自己没有 user_id 列，
+    # 归属由所属公司决定（见本文件开头那两个函数的说明）。
+    # 调用方已经按域查过公司了，这里再过滤一次是第二道闸：
+    # 这个函数将来可能被别处直接调用，而那时不会有人记得先查公司。
+    thesis = conn.execute(
+        f"""SELECT claim, counter_condition FROM theses
+            WHERE company_id = ? AND is_sample = 0{_swc()}
+            ORDER BY id DESC LIMIT 1""", (company_id,)).fetchone()
+    valuation = conn.execute(
+        f"SELECT id FROM valuations WHERE company_id = ?{_sw()} LIMIT 1", (company_id,)).fetchone()
+    # **持仓算法只有一份，就是 _accumulate_positions。**
+    #
+    # 这里原来自己按 side 手算一遍（buy 加、sell 减、bonus 加）。
+    # 2026-09-24 加 `opening`（期初持仓）时立刻炸出这个毛病：
+    # `_accumulate_positions` 认得新类型，而这里不认 —— 于是你明明填了持仓，
+    # 「账本里有持仓」那道守卫却是 False，卡片永远推不到「持仓中」。
+    # **不报错，只是那一格永远进不去。**
+    #
+    # 同一个量有两份算法，加一种记录类型就要改两处，而漏改的那处不会红。
+    # 所以这里改成复用，新增记录类型只要改一个地方。
+    trades = _trade_records(conn.execute(
+        f"""SELECT t.id, t.company_id, t.side, t.trade_date, t.shares, t.price,
+                   t.fee, t.weight_percent, t.cash_amount, t.review_due
+            FROM trades t JOIN portfolios p ON p.id = t.portfolio_id
+            WHERE t.company_id = ?{_sw('p')}""", (company_id,)).fetchall())
+    state = _accumulate_positions(trades).get(company_id) or {}
+    shares = float(state.get("shares") or 0.0)
+    weight = state.get("weight_percent")
+
+    holding = shares > 1e-9 or (weight is not None and float(weight) > 0)
+    bands = loop.normalise_bands((card or {}).get("bands"))
+    return {
+        "watch_reason": bool((card or {}).get("watch_reason", "").strip()),
+        "thesis": bool(thesis and str(thesis["claim"]).strip()),
+        "counter_condition": bool(thesis and str(thesis["counter_condition"]).strip()),
+        "valuation": bool(valuation),
+        "bands": len(bands) == len(loop.BAND_KEYS) and not loop.validate_bands(bands),
+        "position_plan": loop.plan_complete((card or {}).get("position_plan")),
+        "order_plan": loop.order_complete((card or {}).get("order_plan")),
+        "position": holding,
+        "no_position": not holding,
+    }
+
+
+def _latest_close(conn, symbol: str) -> tuple[float | None, str | None]:
+    """最新收盘价。**优先日线，退到实时快照。**
+
+    日线在收盘后才更新，而快照是盘中的；触发判定用日线才能保证
+    「今天触发过一次」不会因为盘中反复穿越而反复触发。
+    """
+    bar = conn.execute(
+        "SELECT trade_date, close FROM price_bars WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1",
+        (symbol,)).fetchone()
+    if bar and bar["close"] is not None:
+        return float(bar["close"]), str(bar["trade_date"])
+    # **列名是 market_timestamp / refreshed_at，不是 captured_at。**
+    # 第一版按记忆写了 captured_at，SQL 直接 `no such column` ——
+    # 而这条路只在「这只票一根日线都没有」时才走到，线上八成要等很久才炸。
+    #
+    # 排序用 refreshed_at（写库时间，永远有值）；日期报 market_timestamp
+    # （行情自己的时点）优先，它才是"这个价是哪天的"。
+    snapshot = conn.execute(
+        "SELECT price, market_timestamp, refreshed_at FROM market_snapshots "
+        "WHERE symbol = ? ORDER BY refreshed_at DESC LIMIT 1",
+        (symbol,)).fetchone()
+    if snapshot and snapshot["price"] is not None:
+        stamp = snapshot["market_timestamp"] or snapshot["refreshed_at"]
+        return float(snapshot["price"]), str(stamp)[:10]
+    return None, None
+
+
+def ensure_decision_card(company_id: int) -> dict[str, Any] | None:
+    """没有卡片就建一张，停在「待研究」。
+
+    **建档即入闭环**：一只票进了研究池却不在闭环里，等于它又回到了
+    「按涨跌幅排列的自选股」那种状态——而那正是这一整套要替换掉的东西。
+    """
+    with connection() as conn:
+        company = conn.execute(
+            f"SELECT id, symbol, name FROM companies WHERE id = ?{_sw()}", (company_id,)).fetchone()
+        if not company:
+            return None
+        row = _card_row(conn, company_id)
+        if row:
+            return _decode_card(row)
+        stamp = now_iso()
+        conn.execute(
+            """INSERT INTO decision_cards
+               (user_id, company_id, state, entered_at, entered_reason, created_at, updated_at)
+               VALUES (?, ?, 'discovered', ?, '建档时自动进入闭环', ?, ?)""",
+            (_stamp(), company_id, stamp, stamp, stamp))
+        return _decode_card(_card_row(conn, company_id))
+
+
+def decision_card(company_id: int) -> dict[str, Any] | None:
+    """一张完整的决策卡：状态、守卫、能走去哪、价格带命中、仓位计划、推进史。"""
+    from . import decision_loop as loop
+
+    ensure_decision_card(company_id)
+    with connection() as conn:
+        company = conn.execute(
+            f"SELECT id, symbol, name, industry FROM companies WHERE id = ?{_sw()}",
+            (company_id,)).fetchone()
+        if not company:
+            return None
+        card = _decode_card(_card_row(conn, company_id))
+        facts = _guard_facts(conn, company_id, card)
+        price, price_date = _latest_close(conn, company["symbol"])
+        history = _rows(conn.execute(
+            f"""SELECT from_state, to_state, actor, reason, price_at_move, created_at
+                FROM decision_transitions WHERE card_id = ?{_swc()}
+                ORDER BY id DESC LIMIT 50""", (card["id"],)).fetchall())
+
+    bands = loop.normalise_bands(card["bands"])
+    state = card["state"]
+
+    # ── 估值 → 价格带的那根线 ──────────────────────────────────────────────
+    #
+    # 估值那边已经算出基准每股价值，这边却要人从零填四个数——两个模块之间
+    # 原来没有任何连接。实测后果：23 笔买入，「计划内/计划外」判定覆盖 0 笔。
+    #
+    # **在 connection() 外面算**：company_valuation 自己要开库。
+    from . import bands as bd
+
+    valuation = company_valuation(company_id)
+    per_share = base_per_share(valuation)
+    suggested = bd.propose(
+        per_share,
+        as_of=(valuation or {}).get("saved_at"),
+        base_report_date=(valuation or {}).get("base_report_date"))
+    stamps = card.get("block_stamps") or {}
+    bands_stamp = stamps.get("bands") or {}
+    # 过期判定用的是**当初定价格带时那一期**，不是估值页现在显示的那一期：
+    # 问的是"我定这组数之后，财报换过没有"。
+    stale = bd.staleness(bands_stamp.get("base_report_date"),
+                         (valuation or {}).get("base_report_date"))
+    reconcile = bd.compare(per_share, bands,
+                           _as_number(card["order_plan"].get("price")), price)
+    fills = company_fills(company_id)
+
+    targets = []
+    for target in loop.allowed_targets(state):
+        # 页面上的下拉是给人点的，所以按「人工」判——
+        # 账本专属的那几条会带着"它由流水决定"的理由显示成不可选。
+        verdict = loop.check(state, target, facts, actor="人工")
+        targets.append({
+            "state": target, "label": loop.STATES[target]["label"],
+            "ok": verdict["ok"], "reason": verdict["reason"], "missing": verdict["missing"],
+            # 页面据此决定「理由」是必填还是可留空（留空则由机器写一句）。
+            "reason_required": loop.requires_reason(state, target),
+            "reason_why": (loop.reason_required_because(state, target)
+                           if loop.requires_reason(state, target) else ""),
+            "auto_reason": loop.auto_reason(state, target, facts),
+        })
+    # 走不通的边也要能问到「为什么走不通」。**把禁令写在页面上**，
+    # 否则它只是一个灰掉的按钮，读起来像 bug 而不是原则。
+    blocked = [
+        {"state": target, "label": loop.STATES[target]["label"],
+         "reason": loop.why_forbidden(state, target)}
+        for target in loop.STATES
+        if target != state and loop.transition_requirements(state, target) is None
+        and (state, target) in loop.FORBIDDEN_REASONS
+    ]
+
+    return {
+        "company_id": company_id,
+        "symbol": company["symbol"],
+        "name": company["name"],
+        "industry": company["industry"],
+        "state": state,
+        "state_label": loop.STATES[state]["label"],
+        "state_means": loop.STATES[state]["means"],
+        # **「下一步」按实际缺口算，不是一句写死的话。**
+        # 写死的会让人去做已经做完的事（见 loop.next_step）。
+        "state_next": loop.next_step(state, facts),
+        "state_next_static": loop.STATES[state]["next"],
+        "entered_at": card["entered_at"],
+        "entered_reason": card["entered_reason"],
+        "watch_reason": card["watch_reason"],
+        "bands": bands,
+        "band_specs": list(loop.BANDS),
+        # 建议值、每块的时间戳、对不上的地方、过期提醒。
+        # **四样都是"摆出来给你看"，没有一样会自己写进库。**
+        "suggested_bands": suggested,
+        "block_stamps": stamps,
+        "reconcile": reconcile,
+        "bands_stale": stale,
+        # 这张卡上登记过的成交。**纪律指标的原料就是它**，
+        # 所以要摆在卡上让人看得见、改得掉（填错价格是常事）。
+        "fills": fills,
+        "valuation_per_share_base": per_share,
+        "valuation_base_report_date": (valuation or {}).get("base_report_date"),
+        "plan_fields": list(loop.PLAN_FIELDS),
+        "position_plan": card["position_plan"],
+        "order_fields": list(loop.ORDER_FIELDS),
+        "order_plan": card["order_plan"],
+        "price": price,
+        "price_date": price_date,
+        "current_band": loop.band_of(price, bands),
+        "current_band_label": loop.BAND_LABELS.get(loop.band_of(price, bands) or ""),
+        "last_trigger": {
+            "band": card["last_trigger_band"] or None,
+            "label": loop.BAND_LABELS.get(card["last_trigger_band"] or ""),
+            "price": card["last_trigger_price"],
+            "date": card["last_trigger_date"],
+        } if card["last_trigger_band"] else None,
+        "guards": [{"key": key, "label": loop.GUARDS[key]["label"],
+                    "ok": facts[key], "fix": loop.GUARDS[key]["fix"],
+                    # 补在哪儿。**没有它，那句"去公司档案的逻辑与证据"
+                    # 就只是一句话，人得自己找页面、找页签、再往下滚。**
+                    "goto": loop.GUARD_GOTO.get(key)}
+                   for key in loop.GUARDS],
+        "targets": targets,
+        "blocked": blocked,
+        "checklist": list(loop.TRIGGER_CHECKLIST),
+        "history": history,
+        "states": {key: value["label"] for key, value in loop.STATES.items()},
+    }
+
+
+def save_decision_card(company_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """存关注理由、价格带、仓位计划。**校验不通过一个字都不存。**
+
+    半张价格带比没有价格带更危险：它在页面上跟整张长得一样，
+    却会在触发时漏掉一整段。
+    """
+    from . import decision_loop as loop
+
+    ensure_decision_card(company_id)
+    bands = loop.normalise_bands(payload.get("bands"))
+    problem = loop.validate_bands(bands)
+    if problem:
+        raise LedgerError(problem)
+    plan = {k: v for k, v in (payload.get("position_plan") or {}).items()
+            if k in {f["key"] for f in loop.PLAN_FIELDS} and v not in (None, "")}
+    problem = loop.validate_plan(plan)
+    if problem:
+        raise LedgerError(problem)
+    order = {k: v for k, v in (payload.get("order_plan") or {}).items()
+             if k in {f["key"] for f in loop.ORDER_FIELDS} and v not in (None, "")}
+    problem = loop.validate_order(order)
+    if problem:
+        raise LedgerError(problem)
+
+    # **在开库之前算好。** _bands_provenance 自己要开一次连接，
+    # 套在 with connection() 里面会嵌套。
+    provenance = _bands_provenance(company_id) if bands else {}
+
+    with connection() as conn:
+        card = _card_row(conn, company_id)
+        if not card:
+            return None
+        stamp = now_iso()
+        # **只给真的改了的那块盖新时间戳。**
+        #
+        # 一律盖新的话，今天调一下仓位计划就会把价格带的日期也刷成今天 ——
+        # 于是"这组价格带有多旧"这个信号被抹掉，而那正是它存在的全部理由。
+        # 一律不盖则相反：改完之后时间戳指着旧的那一版。所以逐块比对。
+        stamps = _decode_json(card.get("block_stamps"))
+        changed = {
+            "bands": bands != _decode_json(card.get("bands")),
+            "position_plan": plan != _decode_json(card.get("position_plan")),
+            "order_plan": order != _decode_json(card.get("order_plan")),
+        }
+        for block, moved in changed.items():
+            if not moved:
+                continue
+            entry = {"set_at": stamp}
+            if block == "bands" and bands:
+                # 价格带的出处：当时是按哪一期财报、哪个每股价值定的。
+                # **存下来而不是每次现查** —— 现查得到的是今天的估值，
+                # 而问题恰恰是"当时那个数后来变了没有"。
+                entry.update(provenance)
+            stamps[block] = entry
+        conn.execute(
+            """UPDATE decision_cards SET watch_reason = ?, bands = ?, position_plan = ?,
+                   order_plan = ?, block_stamps = ?, updated_at = ? WHERE id = ?""",
+            (str(payload.get("watch_reason", card["watch_reason"]))[:600],
+             json.dumps(bands, ensure_ascii=False),
+             json.dumps(plan, ensure_ascii=False),
+             json.dumps(order, ensure_ascii=False),
+             json.dumps(stamps, ensure_ascii=False), stamp, card["id"]))
+    return decision_card(company_id)
+
+
+def move_decision_state(company_id: int, target: str, reason: str,
+                        actor: str = "人工") -> dict[str, Any] | None:
+    """推进一格。守卫不过就报错，**不许"强制推进"**。
+
+    留一个强制开关等于这套守卫不存在：用过一次之后，每一次卡住都会用它。
+    """
+    from . import decision_loop as loop
+
+    ensure_decision_card(company_id)
+    with connection() as conn:
+        card = _card_row(conn, company_id)
+        if not card:
+            return None
+        company = conn.execute(
+            f"SELECT symbol FROM companies WHERE id = ?{_sw()}", (company_id,)).fetchone()
+        facts = _guard_facts(conn, company_id, _decode_card(card))
+        # **actor 要传进守卫。** 有几条边只有账本推得动（见 loop.LEDGER_ONLY）——
+        # 不传的话人工也能点「我已经持仓了」，而那句话该由流水说。
+        verdict = loop.check(card["state"], target, facts, actor=actor)
+        if not verdict["ok"]:
+            raise LedgerError(verdict["reason"])
+        # **往前走的那一步不再强制手写理由。**
+        #
+        # 待研究 → 研究中 的理由就是「我写下了关注理由」，系统自己知道；
+        # 让人再打一遍是纯粹的税，而税收够了人就不推进了 ——
+        # 状态机停在半路比没有状态机更糟，它看起来是准的。
+        # 退回 / 搁置 / 决定买 仍然必须你自己写，理由见 loop.requires_reason。
+        reason = str(reason or "").strip()
+        if not reason:
+            if loop.requires_reason(card["state"], target):
+                raise LedgerError(loop.reason_required_because(card["state"], target))
+            reason = loop.auto_reason(card["state"], target, facts)
+        price, _ = _latest_close(conn, company["symbol"])
+        stamp = now_iso()
+        conn.execute(
+            """UPDATE decision_cards SET state = ?, entered_at = ?, entered_reason = ?,
+                   updated_at = ? WHERE id = ?""",
+            (target, stamp, reason[:600], stamp, card["id"]))
+        conn.execute(
+            """INSERT INTO decision_transitions
+               (card_id, company_id, from_state, to_state, actor, reason, price_at_move, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (card["id"], company_id, card["state"], target, actor,
+             reason[:600], price, stamp))
+    return decision_card(company_id)
+
+
+def evaluate_decision_triggers() -> dict[str, Any]:
+    """先按账本校正，再扫价格触发。见下面的说明。"""
+    ledger = sync_decision_from_ledger()
+    result = _evaluate_price_triggers()
+    result["ledger"] = ledger
+    return result
+
+
+def _evaluate_price_triggers() -> dict[str, Any]:
+    """扫一遍「等待价格」的卡片，价格进了带就推成「触发检查」。
+
+    **一天最多推一次。** 判定用的是日线收盘价而不是盘中价：盘中价会在
+    价格带边缘反复穿越，一天推十次之后这个提醒就废了——任何一个每天响
+    十次的提醒，人都会把它关掉。
+
+    推到的是「触发检查」，不是持仓。价格到了只说明该重新看一眼。
+    """
+    from . import decision_loop as loop
+
+    moved: list[dict[str, Any]] = []
+    with connection() as conn:
+        rows = _rows(conn.execute(
+            f"""SELECT d.id, d.company_id, d.bands, d.last_trigger_band, d.last_trigger_date,
+                       c.symbol, c.name
+                FROM decision_cards d JOIN companies c ON c.id = d.company_id
+                WHERE d.state = 'waiting'{_sw('d')}""").fetchall())
+        for row in rows:
+            bands = loop.normalise_bands(json.loads(row["bands"] or "{}"))
+            if not bands:
+                continue
+            price, price_date = _latest_close(conn, row["symbol"])
+            band = loop.band_of(price, bands)
+            if not band or price is None:
+                continue
+            # 同一天、同一段，不重复推。
+            if row["last_trigger_band"] == band and row["last_trigger_date"] == price_date:
+                continue
+            stamp = now_iso()
+            note = loop.trigger_note(band, price)
+            conn.execute(
+                """UPDATE decision_cards SET state = 'triggered', entered_at = ?, entered_reason = ?,
+                       last_trigger_band = ?, last_trigger_price = ?, last_trigger_date = ?,
+                       updated_at = ? WHERE id = ?""",
+                (stamp, note, band, price, price_date, stamp, row["id"]))
+            conn.execute(
+                """INSERT INTO decision_transitions
+                   (card_id, company_id, from_state, to_state, actor, reason, price_at_move, created_at)
+                   VALUES (?, ?, 'waiting', 'triggered', '价格触发', ?, ?, ?)""",
+                (row["id"], row["company_id"], note, price, stamp))
+            moved.append({"company_id": row["company_id"], "symbol": row["symbol"],
+                          "name": row["name"], "band": band,
+                          "band_label": loop.BAND_LABELS[band], "price": price,
+                          "date": price_date, "note": note})
+    return {"moved": moved, "count": len(moved)}
+
+
+def sync_decision_from_ledger() -> dict[str, Any]:
+    """按账本里的实际持仓校正卡片状态。**两个方向都走。**
+
+    ## 为什么必须有这一步
+
+    `FORBIDDEN_REASONS` 里原来写着「真买了的话，状态机会把它推成「持仓中」」——
+    **那句话是个没兑现的承诺**：代码里根本没有这一段。后果是一只你手上
+    实实在在拿着的票（格力 34 笔流水）停在「待研究」，因为它缺一份估值。
+    一套跟账本说的不一样的状态机，用两天就没人看了。
+
+    ## 两个方向
+
+    · 账本里有持仓、卡片还在持仓之前的某一格 → 推成「持仓中」，actor 记「账本」。
+    · 账本里已经没有持仓、卡片却还在「持仓中」 → 推成「已清仓」。
+
+    **推进理由要写明它是从账本来的**，不能假装是一次判断。
+    这几笔成交在纪律统计里照样会被算成计划外（或无法判定）——
+    状态机承认事实，不等于替你把事实说成是计划内的。
+    """
+    from . import decision_loop as loop
+
+    moved: list[dict[str, Any]] = []
+
+    # **账本里有持仓却还没建卡的公司，先补一张。**
+    #
+    # 「不自动给所有公司建卡」那条纪律（见 decision_loop_board）针对的是
+    # 研究池里两百多只——一次性全塞进「待研究」，那一格就再也没人看了。
+    # 持仓是另一回事：**手上拿着的票必须在闭环里**，而且它只有几只。
+    with connection() as conn:
+        held = _rows(conn.execute(
+            # **不能只认 'buy'。** 持仓 2026-09-24 改成两个数之后，
+            # 手上拿着的票在账本里是 `opening`，而不是 buy ——
+            # 只认 buy 的话，一只你真拿着的票不会被自动拉进闭环。
+            f"""SELECT DISTINCT t.company_id FROM trades t
+                JOIN portfolios p ON p.id = t.portfolio_id
+                WHERE t.side IN ('buy', 'opening', 'rights', 'bonus'){_sw('p')}
+                  AND t.company_id NOT IN (SELECT company_id FROM decision_cards WHERE 1=1{_sw()})
+            """).fetchall())
+    enrolled = [row["company_id"] for row in held]
+    for company_id in enrolled:
+        ensure_decision_card(company_id)
+
+    with connection() as conn:
+        rows = _rows(conn.execute(
+            f"""SELECT d.id, d.company_id, d.state, c.symbol, c.name
+                FROM decision_cards d JOIN companies c ON c.id = d.company_id
+                WHERE 1=1{_sw('d')}""").fetchall())
+        for row in rows:
+            state = row["state"]
+            card = _card_row(conn, row["company_id"])
+            facts = _guard_facts(conn, row["company_id"], _decode_card(card) if card else None)
+            if facts["position"] and state != "holding":
+                target, note = "holding", "账本里有这只票的持仓，状态机按事实推过来。"
+            elif facts["no_position"] and state == "holding":
+                target, note = "exited", "账本里已经没有这只票了，状态机按事实推过来。"
+            else:
+                continue
+            verdict = loop.check(state, target, facts, actor="账本")
+            if not verdict["ok"]:
+                continue
+            price, _ = _latest_close(conn, row["symbol"])
+            stamp = now_iso()
+            conn.execute(
+                """UPDATE decision_cards SET state = ?, entered_at = ?, entered_reason = ?,
+                       updated_at = ? WHERE id = ?""",
+                (target, stamp, note, stamp, row["id"]))
+            conn.execute(
+                """INSERT INTO decision_transitions
+                   (card_id, company_id, from_state, to_state, actor, reason, price_at_move, created_at)
+                   VALUES (?, ?, ?, ?, '账本', ?, ?, ?)""",
+                (row["id"], row["company_id"], state, target, note, price, stamp))
+            moved.append({"company_id": row["company_id"], "symbol": row["symbol"],
+                          "name": row["name"], "from": state, "to": target, "note": note})
+    return {"moved": moved, "count": len(moved), "enrolled": len(enrolled)}
+
+
+def record_fill(company_id: int, price: float, filled_on: str | None = None,
+                shares: float | None = None, note: str = "") -> dict[str, Any] | None:
+    """登记一次真实成交。**在你按下单的那一刻，不是事后补账。**
+
+    这是「计划内 / 计划外交易」现在唯一的数据来源。原来它查账本里的 buy 流水，
+    而持仓改成「只记股数和成本价」之后账本里再也不会出现 buy ——
+    那个指标会**永久变成 0/0 而且不报错**，比删掉它更糟。
+
+    **计划价存快照，不是事后现查卡片。** 卡片上的计划价之后会被改，
+    而这条记录的全部意义就是"我当时计划的是多少、实际成的是多少"。
+    """
+    ensure_decision_card(company_id)
+    day = str(filled_on or date.today().isoformat())[:10]
+    if day > date.today().isoformat():
+        raise LedgerError("成交日期不能填未来的日期。")
+    if not (price > 0):
+        raise LedgerError("成交价要大于 0。")
+    if shares is not None and not (shares > 0):
+        raise LedgerError("股数要么不填，要填就得大于 0。")
+
+    with connection() as conn:
+        card = _card_row(conn, company_id)
+        if not card:
+            return None
+        order = _decode_json(card["order_plan"])
+        conn.execute(
+            """INSERT INTO decision_fills
+               (user_id, card_id, company_id, filled_on, price, shares,
+                planned_price, planned_fraction, state_then, note, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_stamp(), card["id"], company_id, day, float(price),
+             float(shares) if shares is not None else None,
+             _as_number(order.get("price")), str(order.get("fraction") or "")[:60],
+             card["state"], str(note or "")[:300], now_iso()))
+    return decision_card(company_id)
+
+
+def company_fills(company_id: int) -> list[dict[str, Any]]:
+    """这张卡上登记过的成交。页面拿它跟计划价对账。"""
+    with connection() as conn:
+        return _rows(conn.execute(
+            f"""SELECT id, filled_on, price, shares, planned_price, planned_fraction,
+                       state_then, note, created_at
+                FROM decision_fills WHERE company_id = ?{_swc('company_id')}
+                ORDER BY filled_on DESC, id DESC""", (company_id,)).fetchall())
+
+
+def delete_fill(fill_id: int) -> bool:
+    """删掉一条成交登记。**填错价格是常事**，而错的成交价会让纪律指标一直错。"""
+    with connection() as conn:
+        return bool(conn.execute(
+            f"""DELETE FROM decision_fills WHERE id = ?{_swc('company_id')}""",
+            (fill_id,)).rowcount)
+
+
+def _plan_discipline(conn) -> dict[str, Any]:
+    """计划内 / 计划外交易。**这是这一整套里最该盯的那个数。**
+
+    传统看的是收益率和胜率——那两个数在几十次决策之前都是噪声。
+    「我有没有越来越严格地按自己的系统行动」不是：它每一笔都算得出来，
+    而且完全在自己手里。
+
+    ## 判法（只判买入）
+
+    一笔买入算**计划内**，当且仅当成交当天：
+
+      1. 这张卡上已经有四段价格带（而且是在成交之前就写好的）；
+      2. 成交价落在四段里的某一段（即 ≤ 观察区上沿）；
+      3. 卡片当时的状态是「触发检查」或「持仓中」。
+
+    第三条靠推进日志回放：`decision_transitions` 里成交日之前最后一次推进
+    的 to_state 就是当时的状态。**没有日志的老卡片判成「无法判定」**，
+    不判成计划外——把不知道说成违规，这个指标就没人肯看了。
+
+    ## 卖出为什么不判
+
+    卖出要靠「卖出逻辑」那一栏，而它是一段自由文本，机器判不了。
+    硬判的话只能靠"有没有写过这一栏"，那不是纪律，是填空。
+    所以卖出只统计条数，并说明为什么没判——**不判比瞎判好**。
+    """
+    from . import decision_loop as loop
+
+    # **数据源是成交登记，不是账本流水。**
+    #
+    # 原来这里查 `trades WHERE side IN ('buy','sell')`。2026-09-23 持仓改成
+    # 「只记股数和成本价」之后，账本里再也不会出现 buy —— 这个指标会
+    # **永久变成 0/0 而且不报错**，页面上看起来只是"你还没交易过"。
+    # 成交登记挪到了决策卡上（decision_fills），所以这里跟着换源。
+    trades = _rows(conn.execute(
+        f"""SELECT f.id, f.company_id, f.filled_on AS trade_date, f.price, f.shares,
+                   f.planned_price, f.planned_fraction, f.state_then AS logged_state,
+                   f.note AS rationale, c.name AS company_name, c.symbol
+            FROM decision_fills f
+            JOIN companies c ON c.id = f.company_id
+            WHERE 1=1{_swc('f.company_id')}
+            ORDER BY f.filled_on DESC, f.id DESC LIMIT 200""").fetchall())
+    cards = {row["company_id"]: row for row in _rows(conn.execute(
+        f"SELECT id, company_id, bands, order_plan, created_at FROM decision_cards WHERE 1=1{_sw()}").fetchall())}
+    moves: dict[int, list[dict[str, Any]]] = {}
+    for row in _rows(conn.execute(
+            f"""SELECT t.card_id, t.to_state, t.created_at FROM decision_transitions t
+                WHERE 1=1{_swc()} ORDER BY t.id""").fetchall()):
+        moves.setdefault(row["card_id"], []).append(row)
+
+    inside, outside, undecidable = [], [], []
+    for trade in trades:
+        card = cards.get(trade["company_id"])
+        if not card:
+            undecidable.append({**trade, "why": "这只票还没有决策卡，没有可对照的计划。"})
+            continue
+        bands = loop.normalise_bands(json.loads(card["bands"] or "{}"))
+        if not bands:
+            undecidable.append({**trade, "why": "这张卡上还没有价格带，无从判断是不是计划内。"})
+            continue
+        if str(card["created_at"])[:10] > str(trade["trade_date"])[:10]:
+            undecidable.append({**trade, "why": "这笔成交发生在决策卡建立之前。"})
+            continue
+        history = [m for m in moves.get(card["id"], [])
+                   if str(m["created_at"])[:10] <= str(trade["trade_date"])[:10]]
+        state_then = history[-1]["to_state"] if history else "discovered"
+        band = loop.band_of(trade["price"], bands) if trade["price"] is not None else None
+        if trade["price"] is None:
+            undecidable.append({**trade, "why": "这笔没有记成交价（只记了仓位占比）。"})
+        elif band and state_then in loop.IN_PLAN_STATES:
+            # **计划价用登记时的快照**，不是现在卡片上写的那个 ——
+            # 卡片会被改，而"我当时计划的是多少"是这条记录的全部意义。
+            planned = trade["planned_price"]
+            # **写过计划价就顺带对账。** 「计划 300、成交 302」和「计划 300、成交 330」
+            # 都落在价格带里，都算计划内 —— 但后者值得你自己看一眼。
+            drift = ((trade["price"] / planned - 1) * 100
+                     if isinstance(planned, (int, float)) and planned > 0 else None)
+            inside.append({**trade, "band": band, "band_label": loop.BAND_LABELS[band],
+                           "state_then": state_then, "planned_price": planned,
+                           "price_drift": round(drift, 2) if drift is not None else None,
+                           "fraction": trade["planned_fraction"] or None})
+        else:
+            reasons = []
+            if not band:
+                reasons.append(f"成交价 {trade['price']:g} 高于观察区上沿 {bands['watch']:g}")
+            if state_then not in ("triggered", "holding"):
+                reasons.append(f"当时卡片停在「{loop.STATES.get(state_then, {}).get('label', state_then)}」"
+                               f"（计划内要在{'、'.join(loop.STATES[s]['label'] for s in loop.IN_PLAN_STATES)}）")
+            outside.append({**trade, "band": band,
+                            "band_label": loop.BAND_LABELS.get(band or ""),
+                            "state_then": state_then, "why": "；".join(reasons)})
+
+    total_judged = len(inside) + len(outside)
+    return {
+        "inside": inside[:20],
+        "outside": outside[:20],
+        "undecidable": undecidable[:20],
+        "inside_count": len(inside),
+        "outside_count": len(outside),
+        "undecidable_count": len(undecidable),
+        "sell_count": 0,
+        "discipline_rate": (len(inside) / total_judged) if total_judged else None,
+        "sell_note": "只判买入。卖出逻辑是一段自由文本，机器判不了；"
+                     "硬判只能靠「这一栏填没填」，那不是纪律，是填空。",
+    }
+
+
+def decision_loop_board() -> dict[str, Any]:
+    """闭环首页：按状态分组，而不是按涨跌幅。
+
+    **「需要我处理」排最前**。打开这一页第一眼该看到的是"我现在该干什么"，
+    不是"今天谁涨了"。
+    """
+    from . import decision_loop as loop
+
+    with connection() as conn:
+        rows = _rows(conn.execute(
+            f"""SELECT d.id, d.company_id, d.state, d.entered_at, d.entered_reason,
+                       d.watch_reason, d.bands, d.position_plan,
+                       d.last_trigger_band, d.last_trigger_price, d.last_trigger_date,
+                       c.symbol, c.name, c.industry
+                FROM decision_cards d JOIN companies c ON c.id = d.company_id
+                WHERE 1=1{_sw('d')}
+                ORDER BY d.entered_at DESC""").fetchall())
+        prices: dict[str, tuple[float | None, str | None]] = {}
+        for row in rows:
+            if row["symbol"] not in prices:
+                prices[row["symbol"]] = _latest_close(conn, row["symbol"])
+        discipline = _plan_discipline(conn)
+        # 还没进闭环的公司。**不自动建卡**：一次性把两百多家全塞进「待研究」，
+        # 那一格就再也没人看了。这里只报个数，让人自己挑。
+        outside = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM companies c
+                WHERE c.is_watched = 1{_sw('c')}
+                  AND c.id NOT IN (SELECT company_id FROM decision_cards WHERE 1=1{_sw()})"""
+        ).fetchone()
+
+    groups: dict[str, list[dict[str, Any]]] = {key: [] for key in loop.STATE_ORDER}
+    for row in rows:
+        bands = loop.normalise_bands(json.loads(row["bands"] or "{}"))
+        price, price_date = prices.get(row["symbol"], (None, None))
+        band = loop.band_of(price, bands)
+        plan = json.loads(row["position_plan"] or "{}")
+        entry = {
+            "company_id": row["company_id"], "symbol": row["symbol"], "name": row["name"],
+            "industry": row["industry"], "state": row["state"],
+            "state_label": loop.STATES[row["state"]]["label"],
+            "entered_at": row["entered_at"], "entered_reason": row["entered_reason"],
+            "watch_reason": row["watch_reason"],
+            "price": price, "price_date": price_date,
+            "bands": bands, "band": band, "band_label": loop.BAND_LABELS.get(band or ""),
+            "ideal_low": bands.get("ideal"), "ideal_high": bands.get("fair"),
+            "total_percent": plan.get("total_percent"),
+            "last_trigger_band": row["last_trigger_band"] or None,
+            "last_trigger_label": loop.BAND_LABELS.get(row["last_trigger_band"] or ""),
+            "last_trigger_price": row["last_trigger_price"],
+            "last_trigger_date": row["last_trigger_date"],
+            # 「还没完成判断」和「完成了在等价格」必须分得开 —— 这是整套东西里
+            # 最要紧的一次区分：前者根本谈不上错过。
+            "ready": row["state"] in ("waiting", "triggered", "holding"),
+        }
+        groups.setdefault(row["state"], []).append(entry)
+
+    return {
+        "groups": [
+            {"state": key, "label": loop.STATES[key]["label"],
+             "means": loop.STATES[key]["means"], "next": loop.STATES[key]["next"],
+             "actionable": key in loop.ACTIONABLE_STATES,
+             "items": groups.get(key, []), "count": len(groups.get(key, []))}
+            for key in loop.STATE_ORDER
+        ],
+        "total": len(rows),
+        "not_in_loop": int(outside["n"]) if outside else 0,
+        "discipline": discipline,
+        "states": {key: value for key, value in loop.STATES.items()},
+        "state_order": list(loop.STATE_ORDER),
+    }
+
+
+# ── 三、这段上涨属于什么类型 ────────────────────────────────────────────────
+
+
+def _peer_window_change(conn, symbol: str, window: int) -> dict[str, Any]:
+    """同申万一级行业的中位涨幅。
+
+    5/20/60 天直接读 `market_universe` 上的区间涨跌列（同花顺榜单，全市场都有）；
+    其他窗口回落到 `universe_valuation_history` 自己算——那张表只有最近
+    二十来个交易日，所以算不出来时要**明说是样本不够**，不能返回 0。
+    """
+    row = conn.execute(
+        "SELECT sw_level1, change_5d, change_20d, change_60d FROM market_universe WHERE symbol = ?",
+        (symbol,)).fetchone()
+    if not row or not row["sw_level1"]:
+        return {"name": None, "peer_count": 0, "median_change": None,
+                "note": "这只票在全市场底座里没有申万一级行业，比不了同行。"}
+    column = {5: "change_5d", 20: "change_20d", 60: "change_60d"}.get(window)
+    if not column:
+        return {"name": row["sw_level1"], "peer_count": 0, "median_change": None,
+                "note": f"全市场底座只有 5 / 20 / 60 天的区间涨跌，{window} 天这个窗口算不了同行对照。"}
+    peers = [float(r["v"]) for r in conn.execute(
+        f"""SELECT {column} AS v FROM market_universe
+            WHERE sw_level1 = ? AND {column} IS NOT NULL""", (row["sw_level1"],)).fetchall()]
+    if len(peers) < 5:
+        return {"name": row["sw_level1"], "peer_count": len(peers), "median_change": None,
+                "note": f"这个行业在底座里只有 {len(peers)} 家有区间涨跌，样本太少，不算中位数。"}
+    peers.sort()
+    middle = len(peers) // 2
+    median = peers[middle] if len(peers) % 2 else (peers[middle - 1] + peers[middle]) / 2
+    self_change = float(row[column]) if row[column] is not None else None
+    rank = None
+    if self_change is not None:
+        rank = round(sum(1 for v in peers if v <= self_change) / len(peers) * 100, 1)
+    return {"name": row["sw_level1"], "peer_count": len(peers),
+            "median_change": round(median, 2), "rank_percentile": rank, "note": ""}
+
+
+def _prior_daily_sigma(bars: list[dict[str, Any]], window: int,
+                       lookback: int = 120) -> float | None:
+    """窗口**之前**那一段的日涨跌幅标准差。归因门槛按它定。
+
+    **必须取窗口之前，不能取窗口自己。** 拿窗口自己的波动算门槛是循环的：
+    一次大涨会把标准差抬上去，于是它把自己压到门槛之下，
+    结果是"涨得越猛越判成没事发生"。
+
+    样本少于 30 根就返回 None —— 调用方据此退回通用式子，并在页面上说清楚
+    用的是哪一种。给一个 12 根样本算出来的标准差，比不给更糟。
+    """
+    closes = [float(b["close"]) for b in bars if isinstance(b.get("close"), (int, float))]
+    tail = closes[:-(window + 1)] if len(closes) > window + 1 else []
+    tail = tail[-lookback:]
+    if len(tail) < 31:
+        return None
+    returns = [tail[i] / tail[i - 1] - 1 for i in range(1, len(tail)) if tail[i - 1]]
+    if len(returns) < 30:
+        return None
+    mean = sum(returns) / len(returns)
+    variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
+    return math.sqrt(variance) or None
+
+def _chain_peers(conn, symbol: str, window: int) -> list[dict[str, Any]]:
+    """同产业链环节的同行，**逐家点名**，不算中位数。
+
+    ## 为什么是点名不是中位数
+
+    earth-atlas 那份数据里，155 个环节的公司数中位是 2，48 个环节只有 1 家。
+    2 家算中位数没有意义；而「宁德跌 19%，同环节的比亚迪跌 4.7%、亿纬跌 8.1%」
+    是一句结结实实的话 —— **它比 377 家「电力设备」的中位数准得多**，
+    因为那 377 家里混着光伏、风电、电网设备。
+
+    所以这里返回一个带名字和涨跌的列表，判据那边只在样本够时才拿它算中位。
+
+    涨跌读 `market_universe` 的区间列（全市场都有），窗口只有 5/20/60 三档；
+    别的窗口返回空列表并由调用方说明原因 —— **不要拿 20 天的数去填 30 天的窗口**。
+    """
+    column = {5: "change_5d", 20: "change_20d", 60: "change_60d"}.get(window)
+    if not column:
+        return []
+    rows = _rows(conn.execute(
+        f"""SELECT m.symbol, m.name, m.chain, m.segment, m.chain_label, m.stage,
+                   m.segment_label, m.what, m.source_url, m.source_title, m.accessed,
+                   u.{column} AS change, u.name AS market_name
+            FROM chain_segment_members m
+            LEFT JOIN market_universe u ON u.symbol = m.symbol
+            WHERE (m.chain, m.segment) IN (
+                SELECT chain, segment FROM chain_segment_members WHERE symbol = ?)
+            ORDER BY m.chain, m.segment, m.symbol""", (symbol,)).fetchall())
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append({
+            "symbol": row["symbol"],
+            "name": row["market_name"] or row["name"],
+            "chain": row["chain"], "segment": row["segment"],
+            "chain_label": row["chain_label"], "stage": row["stage"],
+            "segment_label": row["segment_label"], "what": row["what"],
+            "source_url": row["source_url"], "source_title": row["source_title"],
+            "accessed": row["accessed"],
+            # **取不到行情就留空，不填 0。** 0 会被当成"没怎么动"。
+            "change": round(float(row["change"]), 2) if row["change"] is not None else None,
+            "self": row["symbol"] == symbol,
+        })
+    return out
+
+
+def _chain_peer_groups(conn, symbol: str, window: int) -> dict[str, Any]:
+    """把同环节的同行按环节分组，顺带给出「够不够算中位数」的判断。"""
+    peers = _chain_peers(conn, symbol, window)
+    if not peers:
+        member = conn.execute(
+            "SELECT COUNT(*) AS n FROM chain_segment_members WHERE symbol = ?",
+            (symbol,)).fetchone()
+        if not member or not member["n"]:
+            return {"groups": [], "note": "这只票不在产业链底图里（earth-atlas 收了 283 只 A 股）。",
+                    "best": None}
+        return {"groups": [], "best": None,
+                "note": f"产业链对照只有 5 / 20 / 60 天三档区间涨跌，{window} 天这个窗口给不出。"}
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for peer in peers:
+        key = f"{peer['chain']}:{peer['segment']}"
+        group = grouped.setdefault(key, {
+            "key": key, "chain_label": peer["chain_label"], "stage": peer["stage"],
+            "segment_label": peer["segment_label"], "what": peer["what"], "members": [],
+        })
+        group["members"].append(peer)
+
+    groups = []
+    for group in grouped.values():
+        others = [m for m in group["members"] if not m["self"] and m["change"] is not None]
+        values = sorted(m["change"] for m in others)
+        median = None
+        if values:
+            middle = len(values) // 2
+            median = round(values[middle] if len(values) % 2
+                           else (values[middle - 1] + values[middle]) / 2, 2)
+        group["peer_count"] = len(others)
+        group["median_change"] = median
+        # **三家才够算中位数**。环节是一个很窄的集合，比申万一级精确得多，
+        # 所以门槛比那边（5 家）低；但一两家只能点名，不能当统计量。
+        group["enough"] = len(others) >= 3
+        groups.append(group)
+
+    groups.sort(key=lambda g: (-g["peer_count"], g["key"]))
+    best = next((g for g in groups if g["enough"]), None)
+    return {
+        "groups": groups,
+        "best": best["key"] if best else None,
+        "note": "" if best else
+                "同环节的公司太少（不足 3 家），只点名不算中位数——"
+                "两家算出来的中位数只是其中一家。",
+    }
+
+
+def rally_facts(company_id: int, window: int = 20) -> dict[str, Any] | None:
+    """规则层要用的全部事实。**每一项都标了出处或缺口，一项都不许编。**"""
+    from . import rally
+    from .providers import board_of
+
+    with connection() as conn:
+        company = conn.execute(
+            f"SELECT id, symbol, name, industry FROM companies WHERE id = ?{_sw()}",
+            (company_id,)).fetchone()
+        if not company:
+            return None
+        symbol = company["symbol"]
+        bars = _bars_for(conn, symbol, limit=max(400, window * 4))
+        universe = conn.execute(
+            """SELECT turnover_rate, float_market_cap, pe_ttm, eps FROM market_universe
+               WHERE symbol = ?""", (symbol,)).fetchone()
+        industry = _peer_window_change(conn, symbol, window)
+        chain_peers = _chain_peer_groups(conn, symbol, window)
+        # 窗口内有没有新的报告期。**是"发布"不是"报告期本身"** ——
+        # 一季报的报告期是 3-31，披露日可能在 4 月底，用报告期会把时点对错一个月。
+        # 库里只有报告期，所以这里保守处理：报告期落在窗口往前推 120 天内，
+        # 并把这个口径原样写进返回值，让页面能说清楚。
+        periods = [str(r["report_date"]) for r in conn.execute(
+            """SELECT report_date FROM financial_periods WHERE symbol = ?
+               ORDER BY report_date DESC LIMIT 8""", (symbol,)).fetchall()]
+        pe_points = _rows(conn.execute(
+            """SELECT point_date, value FROM valuation_points
+               WHERE symbol = ? AND metric = 'pe_ttm'
+               ORDER BY point_date""", (symbol,)).fetchall())
+        if not pe_points:
+            pe_points = _rows(conn.execute(
+                """SELECT point_date, pe_ttm AS value FROM universe_valuation_history
+                   WHERE symbol = ? AND pe_ttm IS NOT NULL
+                   ORDER BY point_date""", (symbol,)).fetchall())
+
+    if len(bars) < window + 2:
+        return {"ok": False, "company_id": company_id, "symbol": symbol, "name": company["name"],
+                "note": f"库里只有 {len(bars)} 根日线，凑不出 {window} 个交易日的窗口。"
+                        f"去公司档案点一次「同步行情历史」。"}
+
+    span = bars[-(window + 1):]
+    start, end = span[0], span[-1]
+    change = (end["close"] / start["close"] - 1) * 100 if start["close"] else None
+
+    # 量能：窗口内日均成交量 / 前一段等长窗口的日均。
+    prior = bars[-(2 * window + 1):-(window + 1)]
+    def mean_volume(rows: list[dict[str, Any]]) -> float | None:
+        values = [float(r["volume"]) for r in rows if r.get("volume")]
+        return sum(values) / len(values) if values else None
+    window_volume, prior_volume = mean_volume(span[1:]), mean_volume(prior)
+
+    # 涨停：按板的幅度判，留 0.3 个点的容差（除权日与四舍五入）。
+    board = board_of(symbol)
+    limit = rally.limit_percent(board, company["name"])
+    limit_days, streak, max_streak = 0, 0, 0
+    for index in range(1, len(span)):
+        previous, current = span[index - 1]["close"], span[index]["close"]
+        if not previous:
+            continue
+        daily = (current / previous - 1) * 100
+        if daily >= limit - 0.3:
+            limit_days += 1
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    # 估值拆解。窗口两端各取最近的一个 PE 点。
+    # **取 PE 要卡新鲜度。**
+    #
+    # 第一版是"取小于等于这一天的最后一个点"，而 valuation_points 这张表是
+    # 靠每次刷新行情顺手记一条攒出来的 —— 中间断几周很常见。于是窗口起点
+    # 拿到的可能是两个月前的 PE，而页面上照样端端正正地显示成"起点 PE"。
+    #
+    # 判得出来的口子：EPS 在窗口内没变的话，PE 必须跟价格同比例走。
+    # 实测润泽科技价格 +5.0% 而查出来的 PE 只动了 +1.0% —— 差的那 4 个点
+    # 不是市场的变化，是两个日期对不上。
+    #
+    # 所以这里只认 7 个自然日内的点，超了就当没有，并把用到的日期一起报出去。
+    def pe_at(day: str, tolerance_days: int = 7) -> tuple[float | None, str | None]:
+        candidates = [p for p in pe_points if str(p["point_date"]) <= day and p["value"]]
+        if not candidates:
+            return None, None
+        point = candidates[-1]
+        gap = (date.fromisoformat(day) - date.fromisoformat(str(point["point_date"])[:10])).days
+        if gap > tolerance_days:
+            return None, str(point["point_date"])[:10]
+        return float(point["value"]), str(point["point_date"])[:10]
+
+    start_day = str(start["trade_date"])[:10]
+    end_day = str(end["trade_date"])[:10]
+    pe_start, pe_start_date = pe_at(start_day)
+    pe_end, pe_end_date = pe_at(end_day)
+    reports_in_window = [p for p in periods if start_day <= p <= end_day]
+
+    pe_end_derived = False
+    if not reports_in_window and pe_start is not None and change is not None:
+        # **窗口内没有新报告期 ⇒ EPS 没动 ⇒ PE 必须跟价格同比例走。**
+        # 这是恒等式，推出来的比查出来的更准（查出来的那个可能隔了几周）。
+        # 标成「推算」，页面要显示出来。
+        pe_end, pe_end_derived = pe_start * (1 + change / 100.0), True
+        pe_end_date = end_day
+
+    pe_change = ((pe_end / pe_start - 1) * 100) if (pe_start and pe_end) else None
+    if reports_in_window:
+        share = rally.earnings_share(change, pe_change) if change is not None else None
+    else:
+        # 窗口内 EPS 没更新 ⇒ 会计上盈利贡献就是 0。**这是恒等式，不是估计。**
+        share = 0.0
+    pe_percentile_start = None
+    if pe_start is not None:
+        sample = [float(p["value"]) for p in pe_points
+                  if str(p["point_date"]) <= start_day and p["value"]]
+        if len(sample) >= MIN_PERCENTILE_SAMPLES:
+            pe_percentile_start = _percentile_of(sample, pe_start)
+
+    with connection() as conn:
+        events = _rows(conn.execute(
+            f"""SELECT event_date, title, category, relevance FROM company_calendar_events
+                WHERE company_id = ? AND event_date >= ? AND event_date <= ?{_swc()}
+                ORDER BY event_date DESC LIMIT 40""",
+            (company_id, start_day, end_day)).fetchall())
+
+    # **「没分过级」不是「不重要」。**
+    #
+    # 收件箱的分级是按需跑的，全库 50080 条公告里 37180 条 relevance 还是空的。
+    # 第一版直接判 `relevance == '高'`，于是宁德时代窗口内那 22 条公告
+    # 全被当成"没有实质公告"，归因结论因此落到「无法解释」——
+    # 而真相是这一项**根本没被判过**。
+    #
+    # 规则分级是纯函数、零成本、当场就能跑（见 classification.py），
+    # 所以这里就地补判，并标出这一条的分级是"存档的"还是"现算的"。
+    # 补判只在内存里做，不写回库：写回等于替用户确认了一件他没看过的事。
+    for event in events:
+        if event.get("relevance"):
+            event["relevance_from"] = "已归档"
+            continue
+        verdict = classify_by_rules(str(event.get("title") or ""), str(event.get("category") or "公告"))
+        event["relevance"] = verdict["relevance"]
+        event["relevance_reason"] = verdict["reason"]
+        event["relevance_from"] = "按规则现算"
+
+    # ── 涨跌有多少集中在实质公告之后的三个交易日 ──
+    #
+    # **只看"占了百分之多少"会被公告的密度骗过去。**
+    #
+    # 第一版就是这么写的：宁德时代窗口内有 9 条实质公告，每条各标记之后三天，
+    # 20 个交易日里被盖掉 15 天（75%），于是"公告后三天贡献了 72% 的幅度"——
+    # 这个 72% 只是覆盖率的影子，它比 75% 还低，说明公告后那几天**反而比平均值弱**。
+    # 而判据写的是「≥50% 就算集中」，于是它稳稳地命中了。
+    #
+    # 正确的判法是提升倍数：占了多少幅度 ÷ 占了多少天。1.0 是"跟没标记一样"，
+    # 要明显大于 1 才谈得上"集中在公告之后"。覆盖率本身也一起报出去——
+    # 公告密到盖满大半个窗口的时候，这个问题本来就没法回答。
+    post_event = None
+    high_events = [e for e in events if e.get("relevance") == "高"]
+    if high_events and change:
+        dates = [str(row["trade_date"])[:10] for row in span]
+        marked: set[int] = set()
+        for event in high_events:
+            day = str(event["event_date"])[:10]
+            after = [i for i, d in enumerate(dates) if d >= day and i > 0]
+            marked.update(after[:3])
+        total_log = sum(math.log(span[i]["close"] / span[i - 1]["close"])
+                        for i in range(1, len(span)) if span[i - 1]["close"])
+        event_log = sum(math.log(span[i]["close"] / span[i - 1]["close"])
+                        for i in sorted(marked) if span[i - 1]["close"])
+        tradable_days = len(span) - 1
+        if abs(total_log) > 1e-9 and tradable_days:
+            # **变量名不能叫 share。** 上面那个 `share` 是盈利贡献，
+            # 而这里是"公告后三天占了多少幅度"——两个完全不同的量。
+            # 第一版复用了同一个名字，于是「盈利贡献」被这一行悄悄改写成了
+            # 公告占比：页面上「基本面驱动」写着「盈利贡献 -8%」，
+            # 而「窗口内新报告期：没有」就在同一屏上 —— 两句话自相矛盾，
+            # 是截图比对时才发现的（同一个 -8% 在两个地方出现）。
+            event_share = event_log / total_log
+            day_share = len(marked) / tradable_days
+            post_event = {
+                "share": event_share,
+                "day_share": day_share,
+                "covered_days": len(marked),
+                "tradable_days": tradable_days,
+                "lift": (event_share / day_share) if day_share else None,
+                "events_used": len(high_events),
+            }
+
+    return {
+        "ok": True,
+        "company_id": company_id,
+        "symbol": symbol,
+        "name": company["name"],
+        "board": board,
+        "limit_percent": limit,
+        "window_days": window,
+        "windows": list(rally.WINDOWS),
+        "start_date": start_day,
+        "end_date": end_day,
+        "start_close": start["close"],
+        "end_close": end["close"],
+        "change": round(change, 2) if change is not None else None,
+        # 归因门槛按这只票自己的波动定（见 rally.attribution_floor）。
+        # 取窗口之前那一段，不取窗口自己 —— 否则是循环的。
+        "prior_daily_sigma": _prior_daily_sigma(bars, window),
+        "industry": industry,
+        # 产业链环节的同行。**比申万一级精确得多**：宁德的申万对照组是
+        # 377 家「电力设备」（混着光伏、风电、电网设备），而它的环节对照组
+        # 是「电芯」那两三家。样本够就让判据用它，不够就只点名。
+        "chain_peers": chain_peers,
+        "volume": {
+            "window_avg": window_volume, "prior_avg": prior_volume,
+            "ratio": round(window_volume / prior_volume, 2)
+            if (window_volume and prior_volume) else None,
+        },
+        "limit_up_days": limit_days,
+        "max_limit_streak": max_streak,
+        "turnover_rate": float(universe["turnover_rate"]) if universe and universe["turnover_rate"] else None,
+        "float_market_cap": float(universe["float_market_cap"]) if universe and universe["float_market_cap"] else None,
+        "valuation": {
+            "pe_start": pe_start, "pe_end": pe_end, "pe_change": pe_change,
+            "pe_start_date": pe_start_date, "pe_end_date": pe_end_date,
+            "pe_end_derived": pe_end_derived,
+            "earnings_share": share,
+            "report_in_window": bool(reports_in_window),
+            "report_dates": reports_in_window,
+            "report_date_caveat": "库里只有报告期，没有披露日。报告期落在窗口内才算"
+                                  "「窗口里出过新财报」——真实披露日通常比报告期晚一个月，"
+                                  "所以这一条偏保守：会漏判，不会误判。",
+            "pe_percentile_start": pe_percentile_start,
+            "pe_sample": len(pe_points),
+        },
+        "events": events,
+        # **显式写 True，不靠判据那边的默认值。**
+        # 「取不到公告」和「没有公告」判据那边是两条路，而默认值会让
+        # 「这条路有没有公告表」变成一件要靠读代码才知道的事。
+        "events_available": True,
+        "event_count": len(events),
+        "high_relevance_count": len(high_events),
+        "post_event": post_event,
+    }
+
+
+def rally_view(company_id: int, window: int = 20) -> dict[str, Any] | None:
+    """规则层的完整结论。**不调模型，不花积分。**"""
+    from . import rally
+
+    facts = rally_facts(company_id, window)
+    if facts is None:
+        return None
+    if not facts.get("ok"):
+        return {"facts": facts, "verdict": {"ok": False, "note": facts.get("note", "")}}
+    return {"facts": facts, "verdict": rally.classify(facts),
+            "types": list(rally.TYPES)}
+
+
+def rally_narration(company_id: int, window: int = 20) -> dict[str, Any] | None:
+    """规则层 + 模型那一段解释。**要花积分。**
+
+    规则层照样先跑完整；模型跑挂了也要把规则层的结论原样交出去——
+    这一页的主体是判据，模型只是旁边那段话。
+    """
+    from . import rally
+
+    view = rally_view(company_id, window)
+    if view is None:
+        return None
+    verdict = view["verdict"]
+    if not verdict.get("ok"):
+        return {**view, "narration": {"ok": False, "skipped": True,
+                                      "note": verdict.get("note", "")}}
+    try:
+        narration = rally.narrate(view["facts"], verdict)
+    except Exception as exc:                      # noqa: BLE001 — 模型什么都可能抛
+        narration = {"ok": False, "note": f"模型这一步没跑成：{exc}"}
+    return {**view, "narration": narration}
+
+
+def rally_facts_by_symbol(symbol: str, window: int = 20) -> dict[str, Any] | None:
+    """任意一只 A 股的涨跌归因事实，**不要求它在你的研究池里**。
+
+    ## 为什么必须支持池子外
+
+    使用者的原话是「看到涨停的股票明明很烂，但就是能好几个涨停，
+    对自己的判断也出现了怀疑」。**那些票按定义就不在他的研究池里**——
+    他要是研究过它们，也就不会看不懂了。只能查池内等于这个功能
+    在最需要它的那一刻用不上。
+
+    ## 两条路，能走哪条走哪条
+
+    在池子里、而且日线够长 → 走 `rally_facts`，判据最全。
+    不在池子里 → 用全市场底座：`universe_valuation_history` 有全市场
+    每日收盘价与 PE（实测 5569 只 × 22 个交易日），够算区间涨跌、
+    涨跌停天数和估值拆解；`market_universe` 补行业、换手、流通市值。
+
+    **取不到的一律标成取不到，不给默认值。** 成交量、公告、历史估值分位
+    这三样底座里没有，判据那边会因此判成"不通过"而不是"通过"——
+    「查不到」和「没有」在这里是两件事（见 `none-has-two-sources`）。
+    """
+    from . import rally
+    from .providers import board_of, normalize_cn_symbol
+
+    try:
+        symbol = normalize_cn_symbol(symbol)
+    except Exception:                              # noqa: BLE001 — 代码不合法
+        return None
+
+    with connection() as conn:
+        company = conn.execute(
+            f"SELECT id FROM companies WHERE symbol = ?{_sw()}", (symbol,)).fetchone()
+        if company:
+            bars = conn.execute(
+                "SELECT COUNT(*) AS n FROM price_bars WHERE symbol = ?", (symbol,)).fetchone()
+            if bars and int(bars["n"]) >= window + 2:
+                return rally_facts(int(company["id"]), window)
+
+        row = conn.execute(
+            """SELECT symbol, name, sw_level1, turnover_rate, float_market_cap,
+                      pe_ttm, report_date
+               FROM market_universe WHERE symbol = ?""", (symbol,)).fetchone()
+        if not row:
+            return None
+        series = _rows(conn.execute(
+            """SELECT point_date, close, pe_ttm FROM universe_valuation_history
+               WHERE symbol = ? AND close IS NOT NULL
+               ORDER BY point_date""", (symbol,)).fetchall())
+        industry = _peer_window_change(conn, symbol, window)
+        chain_peers = _chain_peer_groups(conn, symbol, window)
+
+    if len(series) < 3:
+        return {"ok": False, "symbol": symbol, "name": row["name"],
+                "note": f"全市场底座里这只票只有 {len(series)} 天的收盘价，"
+                        f"算不出 {window} 个交易日的区间。底座每天同步一次，"
+                        f"攒够之前这一页给不出结论。"}
+
+    # **底座只有二十来个交易日**，窗口要不到就用现有的全部，并把真实天数报出去。
+    span = series[-(window + 1):] if len(series) > window else series
+    actual_window = len(span) - 1
+    start, end = span[0], span[-1]
+    start_close, end_close = float(start["close"]), float(end["close"])
+    change = (end_close / start_close - 1) * 100 if start_close else None
+
+    board = board_of(symbol)
+    limit = rally.limit_percent(board, row["name"])
+    limit_days, streak, max_streak = 0, 0, 0
+    for index in range(1, len(span)):
+        previous, current = float(span[index - 1]["close"]), float(span[index]["close"])
+        if not previous:
+            continue
+        if (current / previous - 1) * 100 >= limit - 0.3:
+            limit_days += 1
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    start_day, end_day = str(start["point_date"])[:10], str(end["point_date"])[:10]
+    pe_start = float(start["pe_ttm"]) if start["pe_ttm"] else None
+    pe_end = float(end["pe_ttm"]) if end["pe_ttm"] else None
+    report_date = str(row["report_date"] or "")[:10]
+    report_in_window = bool(report_date and start_day <= report_date <= end_day)
+    if report_in_window and pe_start and pe_end and change is not None:
+        share = rally.earnings_share(change, (pe_end / pe_start - 1) * 100)
+    else:
+        share = 0.0
+
+    return {
+        "ok": True,
+        "company_id": None,
+        "symbol": symbol,
+        "name": row["name"],
+        "board": board,
+        "limit_percent": limit,
+        "window_days": actual_window,
+        "windows": list(rally.WINDOWS),
+        "requested_window": window,
+        "start_date": start_day,
+        "end_date": end_day,
+        "start_close": start_close,
+        "end_close": end_close,
+        "change": round(change, 2) if change is not None else None,
+        # **底座只有二十来个交易日，凑不出「窗口之前那一段」。**
+        # 显式给 None，判据那边据此退回通用门槛并在页面上说明。
+        "prior_daily_sigma": None,
+        "industry": industry,
+        "chain_peers": chain_peers,
+        # **底座没有成交量。** 报 None 而不是 0——0 会让「没有放量」这句话
+        # 凭空成立，而真相是这一项根本没取到。
+        "volume": {"window_avg": None, "prior_avg": None, "ratio": None},
+        "limit_up_days": limit_days,
+        "max_limit_streak": max_streak,
+        "turnover_rate": float(row["turnover_rate"]) if row["turnover_rate"] else None,
+        "float_market_cap": float(row["float_market_cap"]) if row["float_market_cap"] else None,
+        "valuation": {
+            "pe_start": pe_start, "pe_end": pe_end,
+            "pe_change": ((pe_end / pe_start - 1) * 100) if (pe_start and pe_end) else None,
+            "pe_start_date": start_day, "pe_end_date": end_day, "pe_end_derived": False,
+            "earnings_share": share,
+            "report_in_window": report_in_window,
+            "report_dates": [report_date] if report_in_window else [],
+            "report_date_caveat": "全市场底座只记最近一个报告期，没有披露日。"
+                                  "报告期落在窗口内才算「窗口里出过新财报」——"
+                                  "真实披露日通常比报告期晚一个月，所以这一条偏保守。",
+            # 底座只有二十来天，凑不够算分位的样本
+            "pe_percentile_start": None,
+            "pe_sample": len(series),
+        },
+        "events": [],
+        "events_available": False,
+        "event_count": 0,
+        "high_relevance_count": 0,
+        "post_event": None,
+        # **这一页少了哪几样，写在返回值里而不是让人从空值里猜。**
+        "source": "全市场底座（不在你的研究池里）",
+        "unavailable": [
+            "成交量：底座只存收盘价与估值，算不了量能放大倍数",
+            "公告：公告表按公司档案存，这只票没有建档",
+            "历史估值分位：底座只有二十来个交易日，凑不够算分位的样本",
+        ],
+        "enrich_hint": "把它建成公司档案并同步一次行情历史，上面这三样就都有了。",
+    }
+
+
+def rally_lookup(symbol: str, window: int = 20) -> dict[str, Any] | None:
+    """按代码查任意一只 A 股的涨跌归因。规则层，不调模型。"""
+    from . import rally
+
+    facts = rally_facts_by_symbol(symbol, window)
+    if facts is None:
+        return None
+    if not facts.get("ok"):
+        return {"facts": facts, "verdict": {"ok": False, "note": facts.get("note", "")}}
+    return {"facts": facts, "verdict": rally.classify(facts), "types": list(rally.TYPES)}

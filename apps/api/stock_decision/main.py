@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import access, llm
+from . import access, assistant, assistant_research, llm
 from .database import integrity_errors
 from .llm import credit_state
 from .database import database_path, initialize_database
@@ -31,8 +31,10 @@ from .repository import (
     create_industry_chain_theme,
     fork_industry_chain_theme,
     get_industry_chain,
+    industry_chain_compare,
     add_industry_chain_stage,
     add_industry_chain_node,
+    set_industry_chain_node_market_size,
     add_industry_chain_edge,
     add_industry_chain_position,
     delete_industry_chain_record,
@@ -85,11 +87,14 @@ from .repository import (
     create_research_task,
     create_thesis_review,
     create_trade,
-    create_trades_batch,
+    purge_company_trades,
+    delete_portfolio,
+    record_fill,
+    delete_fill,
+    company_fills,
+    set_holding,
+    drop_holding,
     delete_trade,
-    keep_scan_rows,
-    mark_known_trades,
-    scan_trade_screenshot,
     update_portfolio,
     dashboard,
     decision_board,
@@ -193,13 +198,24 @@ from .repository import (
     generate_deep_report,
     add_supply_chain_link,
     delete_report,
+    # 我的判断 · 做 T 回测 / 决策闭环 / 上涨类型
+    swing_study,
+    decision_loop_board,
+    decision_card,
+    save_decision_card,
+    move_decision_state,
+    ensure_decision_card,
+    evaluate_decision_triggers,
+    sync_decision_from_ledger,
+    rally_view,
+    rally_narration,
+    rally_lookup,
 )
 from .peers import position as peer_position, table as peer_table
 from .schemas import (
+    ChainCompareView,
     AdvocateAsk,
     PromiseBatch,
-    ScanKeep,
-    ScanKnown,
     PromiseSettle,
     Billing,
     CompanyFromQuoteInput,
@@ -220,9 +236,11 @@ from .schemas import (
     LocalDataSummary,
     PortfolioCreate,
     PortfolioUpdate,
-    TradeBatchCreate,
-    TradeBatchResult,
-    TradeScanResult,
+    FillInput,
+    HoldingInput,
+    PortfolioDeleted,
+    TradePurgeRequest,
+    TradePurgeResult,
     PortfolioDetail,
     PortfolioSummary,
     InboxActionResult,
@@ -238,6 +256,7 @@ from .schemas import (
     IndustryChainDraftRequest,
     IndustryChainStageCreate,
     IndustryChainNodeCreate,
+    IndustryChainNodeMarketSize,
     IndustryChainEdgeCreate,
     IndustryChainPositionCreate,
     IndustryChainThemeSummary,
@@ -366,15 +385,22 @@ async def lifespan(_: FastAPI):
     _refuse_to_serve_without_isolation()
     stop_event = asyncio.Event()
     scheduler_task = asyncio.create_task(scheduler_loop(stop_event))
+    # 助理盯盘单独一条循环，**不进调度器**：调度器同一时间只跑一个作业，
+    # 一个几分钟的全量同步就能把「到价五分钟内告诉你」拖黄。默认关，.env 里开。
+    watch_task = (asyncio.create_task(assistant.watch_loop(stop_event))
+                  if assistant.watch_enabled() else None)
     try:
         yield
     finally:
         stop_event.set()
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except (asyncio.CancelledError, Exception):  # 关闭时不因调度器报错影响退出
-            pass
+        for task in (scheduler_task, watch_task):
+            if task is None:
+                continue
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # 关闭时不因后台循环报错影响退出
+                pass
 
 def _refuse_to_serve_without_isolation() -> None:
     """开着多用户、却没有数据库层强制隔离时，**拒绝启动**。
@@ -1086,6 +1112,19 @@ def get_portfolio_detail(portfolio_id: int) -> PortfolioDetail:
     return portfolio
 
 
+@app.delete("/api/v1/portfolios/{portfolio_id}", response_model=PortfolioDeleted)
+def remove_portfolio(portfolio_id: int) -> PortfolioDeleted:
+    """删掉一个组合，连里面的持仓一起。**删了就回不来。**
+
+    返回它带走了多少只持仓：删一个空组合和删掉一个装满记录的组合，
+    在界面上长得一模一样。
+    """
+    result = delete_portfolio(portfolio_id)
+    if not result["deleted"]:
+        raise not_found("portfolio")
+    return PortfolioDeleted(**result)
+
+
 @app.patch("/api/v1/portfolios/{portfolio_id}", response_model=PortfolioSummary)
 def patch_portfolio(portfolio_id: int, payload: PortfolioUpdate) -> PortfolioSummary:
     try:
@@ -1463,17 +1502,6 @@ def post_document_ask(document_id: int, payload: dict) -> dict:
             "chars": context["chars"]}
 
 
-@app.post("/api/v1/ledger/scan/estimate")
-async def post_scan_estimate(file: UploadFile = File(...)) -> dict:
-    """点之前先说这张图要花多少分。**切片在本地做，估价不花钱。**"""
-    from .ledger_scan import estimate_credits
-
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有收到图片")
-    return estimate_credits(data)
-
-
 @app.get("/api/v1/companies/{company_id}/promises/estimate")
 def get_promise_estimate(company_id: int) -> dict:
     """抽承诺**这一次**大概几分 —— 按真的要喂多少字算，不查那张典型值表。
@@ -1517,67 +1545,51 @@ def get_credit_estimates() -> dict:
     return table
 
 
-@app.post("/api/v1/ledger/scan", response_model=BackgroundJob)
-async def post_ledger_scan(
-    file: UploadFile = File(...),
-    hint: str = Form(default=""),
-    company_id: int | None = Form(default=None),
-) -> BackgroundJob:
-    """读一张券商交割单截图。**后台跑**——几十笔流水的图要读一两分钟，
-    切页面、锁屏、刷新都不该让它白跑。返回任务，结果轮询 `/api/v1/jobs/ledger_scan/0`。
+@app.put("/api/v1/portfolios/{portfolio_id}/holdings", response_model=TradeRecord,
+         status_code=status.HTTP_200_OK)
+def put_holding(portfolio_id: int, payload: HoldingInput) -> TradeRecord:
+    """设定一只票的持仓：N 股、成本价 P。**新增和更新是同一个动作。**
 
-    company_id 可选：个股交易记录页上每行都没有股票代码，指定一次比让模型猜可靠。
-
-    只读不写：每条流水都要你确认后才进账本。
+    用 PUT 不用 POST：这是"把它设成这样"，不是"再加一笔"。重复调用同一组数
+    结果一样（幂等），而 POST 的语义会让人以为调两次就是买了两次。
     """
-
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有收到图片")
-    media_type = file.content_type or "image/png"
-
-    def work(_job_id: int):
-        result = scan_trade_screenshot(data, media_type, hint, company_id=company_id)
-        count = len(result["trades"])
-        if count == 0:
-            # **一条都没读出来要说清楚是怎么回事。** 之前这里返回一个空列表，
-            # 页面显示「读到 0 条」，看不出是图糊了、是格式不认识、还是功能坏了。
-            note = "一条流水都没读出来。多半是图太糊或者截得太小——"
-            note += "把交割单放大到能看清每个数字再截，或者分几张截。"
-        else:
-            geometry = result.get("geometry") or {}
-            note = f"读出 {count} 条流水，等你逐条确认。"
-            if geometry.get("sliced"):
-                note += f"（长截图，切成 {geometry['slices']} 段读的）"
-        return note, result
-
-    return BackgroundJob(**await submit("ledger_scan", 0, work, label="模型正在读交割单"))
+    try:
+        trade = set_holding(portfolio_id, payload.company_id,
+                            payload.shares, payload.cost_price)
+    except LedgerError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(exc)) from exc
+    if not trade:
+        raise not_found("portfolio")
+    return trade
 
 
-@app.post("/api/v1/ledger/scan/known")
-def post_known_scan(payload: ScanKnown) -> dict:
-    """这批读出来的流水里，哪几条账本里已经有了（返回下标）。
+@app.delete("/api/v1/portfolios/{portfolio_id}/holdings/{company_id}",
+            response_model=TradePurgeResult)
+def delete_holding(portfolio_id: int, company_id: int) -> TradePurgeResult:
+    """把一只票从持仓里去掉，连同它的历史。**删掉就回不来了。**
 
-    **只标记，不拦截**：同一天拆单成交出两笔完全相同的记录是真会发生的。
+    返回真实删除条数：删 0 条和删 34 条在界面上长得一样，
+    静默成功会让人以为清过了。
     """
-    return {"known": mark_known_trades(payload.portfolio_id,
-                                       [item.model_dump() for item in payload.trades])}
+    result = drop_holding(portfolio_id, company_id)
+    if result.get("missing_portfolio"):
+        raise not_found("portfolio")
+    return TradePurgeResult(**{k: v for k, v in result.items() if k != "missing_portfolio"})
 
 
-@app.post("/api/v1/ledger/scan/keep")
-def post_keep_scan(payload: ScanKeep) -> dict:
-    """记完之后，把**还没记的那些**存回去；一条不剩就把这次读图的结果清掉。
+@app.post("/api/v1/portfolios/{portfolio_id}/trades/purge", response_model=TradePurgeResult)
+def post_trades_purge(portfolio_id: int, payload: TradePurgeRequest) -> TradePurgeResult:
+    """把某几家公司在这个组合里的流水整段删掉。**删不回来。**
 
-    此前记完再进来，同一批流水原样还在——**点两次就记两遍**，
-    而账本里两笔一模一样的交易，事后没有任何办法分辨哪一笔是多的。
+    这条路存在的理由见 repository.purge_company_trades：手工流水账烂掉之后
+    逐条修是修不回来的，唯一能回到"账对得上"的路是整段翻篇 +
+    一条期初持仓重新声明现在有多少。
     """
-    return {"kept": keep_scan_rows([item.model_dump() for item in payload.trades])}
-
-
-@app.post("/api/v1/portfolios/{portfolio_id}/trades/batch", response_model=TradeBatchResult)
-def post_trades_batch(portfolio_id: int, payload: TradeBatchCreate) -> TradeBatchResult:
-    """确认读图结果，逐条记入。一条失败不影响其余——见 create_trades_batch 的说明。"""
-    return TradeBatchResult(**create_trades_batch(portfolio_id, payload.trades))
+    result = purge_company_trades(portfolio_id, payload.company_ids)
+    if result.get("missing_portfolio"):
+        raise not_found("portfolio")
+    return TradePurgeResult(**{k: v for k, v in result.items() if k != "missing_portfolio"})
 
 
 @app.post("/api/v1/portfolios/{portfolio_id}/trades", response_model=TradeRecord, status_code=status.HTTP_201_CREATED)
@@ -1611,7 +1623,7 @@ def get_thesis_revisions(thesis_id: int) -> list[RecordRevision]:
 def remove_trade(trade_id: int) -> Response:
     """删掉一笔交易。
 
-    读交割单会把方向读反、会多读一行；删不掉的话唯一的补救是记一笔反向交易去抵消，
+    手记会记错组合、也会记重；删不掉的话唯一的补救是记一笔反向交易去抵消，
     那等于往账本里写一笔**从未发生过的事**——比留着错的更糟。
     """
     if not delete_trade(trade_id):
@@ -2628,6 +2640,20 @@ def get_industry_chain_route(theme_id: int) -> IndustryChainView:
     return IndustryChainView(**view)
 
 
+@app.get("/api/v1/industry-chains/{theme_id}/compare", response_model=ChainCompareView)
+def get_industry_chain_compare(theme_id: int) -> ChainCompareView:
+    """按环节横排这张底图上的公司。
+
+    行业分类(申万 / 证监会)是按公司主营分的,分不出「同一种材料在两条链上是两个市场」;
+    底图把公司挂在环节上,所以这里能做到通用行业分类做不到的横比。
+    指标全部来自全市场底座 `market_universe`,跟着 `universe` 同步任务走(每 30 分钟)。
+    """
+    view = industry_chain_compare(theme_id)
+    if view is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="没有这张产业链底图")
+    return ChainCompareView(**view)
+
+
 @app.post("/api/v1/industry-chains/{theme_id}/stages", response_model=IndustryChainView)
 def post_industry_chain_stage(theme_id: int, payload: IndustryChainStageCreate) -> IndustryChainView:
     try:
@@ -2647,6 +2673,18 @@ def post_industry_chain_node(theme_id: int, payload: IndustryChainNodeCreate) ->
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if view is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="阶段或底图不存在")
+    return IndustryChainView(**view)
+
+
+@app.patch("/api/v1/industry-chains/{theme_id}/nodes/{node_id}/market-size", response_model=IndustryChainView)
+def patch_industry_chain_node_market_size(
+    theme_id: int, node_id: int, payload: IndustryChainNodeMarketSize
+) -> IndustryChainView:
+    """给一个环节补上市场盘子(亿元人民币)+ 口径 + 出处,供「环节拥挤度」当分母。"""
+
+    view = set_industry_chain_node_market_size(theme_id, node_id, payload.model_dump())
+    if view is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="节点或底图不存在")
     return IndustryChainView(**view)
 
 
@@ -3118,3 +3156,257 @@ def patch_task_item(item_id: int, payload: ResearchTaskItemUpdate) -> ResearchTa
     if not task:
         raise not_found("task item")
     return task
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 我的判断 · 做 T 回测 / 决策闭环 / 上涨类型
+#
+# 三个接口都**不声明 response_model**，理由跟 money-flow 那几个一样：
+# 返回的是判据表与图的数据，形状随判据多少而变；套一个模型只会在加一条判据时
+# 把它悄悄吃掉（见 test_response_model_fields.py 里那个坑）。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/v1/companies/{company_id}/swing")
+def get_swing_study(
+    company_id: int,
+    window: int = Query(default=250, ge=0, le=2000),
+    trigger_percent: float = Query(default=1.0, ge=0.0, le=20.0),
+    base_shares: int = Query(default=10000, ge=100, le=100_000_000),
+    tactical_percent: float = Query(default=20.0, gt=0.0, le=100.0),
+    commission_rate: float = Query(default=0.00025, ge=0.0, le=0.01),
+    commission_min: float = Query(default=5.0, ge=0.0, le=100.0),
+    stamp_tax_rate: float = Query(default=0.0005, ge=0.0, le=0.01),
+    transfer_fee_rate: float = Query(default=0.00001, ge=0.0, le=0.01),
+    slippage_rate: float = Query(default=0.0, ge=0.0, le=0.05),
+) -> dict:
+    """做 T 的规律检验 + 四条策略的机器模拟。**纯算术，不调模型，不花积分。**
+
+    费率全部开成参数：**费率差一倍，结论会反过来**，把它写死在代码里
+    是这类工具最容易犯的错。默认值在 swing.py 里各自标了口径。
+    """
+    view = swing_study(
+        company_id, window=window, trigger_percent=trigger_percent,
+        base_shares=base_shares, tactical_percent=tactical_percent,
+        costs={"commission_rate": commission_rate, "commission_min": commission_min,
+               "stamp_tax_rate": stamp_tax_rate, "transfer_fee_rate": transfer_fee_rate,
+               "slippage_rate": slippage_rate})
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.get("/api/v1/decision-loop")
+def get_decision_loop() -> dict:
+    """闭环首页：按状态分组，不按涨跌幅。
+
+    顺带把「计划内 / 计划外交易」算出来——那是这一整套里最该盯的数字，
+    而且它完全在使用者自己手里。
+    """
+    return decision_loop_board()
+
+
+@app.post("/api/v1/decision-loop/evaluate")
+def post_evaluate_triggers() -> dict:
+    """按账本校正状态，再扫一遍价格触发。
+
+    **两件事都是「按事实校正」，所以是同一个按钮。** 分成两个的话，
+    其中一个永远不会被点 —— 而没被点的那个恰恰是让状态机跟账本不脱节的那个。
+
+    **推到的是触发检查，不是持仓。** 价格到了只说明该重新看一眼。
+    一天最多推一次，判定用日线收盘价——盘中价会在价格带边缘反复穿越。
+    """
+    return evaluate_decision_triggers()
+
+
+# ── 助理（assistant.py）──────────────────────────────────────────────────
+#
+# 这几条是给助理读的（nanobot 那边的 MCP 工具，见 apps/assistant/）。
+# **判断都在 assistant.py 里**，这里只转一手——换一个 agent 框架，这几条不用动。
+
+@app.get("/api/v1/assistant/my-stocks")
+def get_assistant_my_stocks() -> list[dict]:
+    """「你的票」：观察池 / 候选池、有决策卡的、写过逻辑的、持有的，四个清单的并集。"""
+    return assistant.my_stocks()
+
+
+@app.get("/api/v1/assistant/resolve")
+def get_assistant_resolve(q: str = "") -> list[dict]:
+    """「宁德」→ 宁德时代。先在你的票里找，找不到再去全部档案里找。"""
+    return assistant.resolve(q[:40])
+
+
+@app.get("/api/v1/assistant/check/{company_id}")
+def get_assistant_check(company_id: int, price: float | None = None) -> dict:
+    """交易前核验：合不合你自己写的计划。**只读，不建卡、不推状态。**"""
+    if price is not None and not (0 < price < 1e6):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="价格要大于 0。")
+    view = assistant.pre_trade_check(company_id, price)
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.post("/api/v1/assistant/watch")
+def post_assistant_watch(send: bool = False, fetch: bool = True) -> dict:
+    """手动盯一轮。**默认只看不发**：在页面上点着试的时候，不该真往飞书推。
+
+    真要发（send=true）只有站主能点：提醒是送进站主自己的飞书对话的，
+    别人触发一次，他的计划价就进了站主的聊天记录。
+    """
+    if send:
+        access.require_owner("让助理往飞书发提醒")
+    return assistant.watch_once(send=send, fetch=fetch)
+
+
+@app.get("/api/v1/assistant/status")
+def get_assistant_status() -> dict:
+    """助理最近在干什么：最近几轮盯盘、最近几条提醒送没送到。"""
+    return assistant.status()
+
+
+@app.get("/api/v1/assistant/research/{company_id}")
+def get_assistant_research(
+    company_id: int, section: assistant_research.ResearchSection = "theses",
+    annual_only: bool = True, keyword: str = Query(default="", max_length=100),
+    event_date: str = Query(default="", max_length=10), report_id: int | None = None,
+    offset: int = Query(default=0, ge=0, le=2000000),
+) -> dict:
+    view = assistant_research.read(company_id, section, annual_only=annual_only,
+        keyword=keyword, event_date=event_date, report_id=report_id, offset=offset)
+    if view is None:
+        raise not_found("company or report")
+    return view
+
+
+@app.get("/api/v1/companies/{company_id}/decision-card")
+def get_decision_card(company_id: int) -> dict:
+    """一家公司的决策卡：状态、守卫、能走去哪、为什么走不了、价格带、推进史。"""
+    view = decision_card(company_id)
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.post("/api/v1/companies/{company_id}/decision-card")
+def post_decision_card(company_id: int, payload: dict) -> dict:
+    """存关注理由、四段价格带、仓位计划。**校验不通过一个字都不存。**"""
+    try:
+        view = save_decision_card(company_id, payload)
+    except LedgerError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(exc)) from exc
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.post("/api/v1/companies/{company_id}/decision-card/move")
+def post_decision_move(company_id: int, payload: dict) -> dict:
+    """推进一格。守卫不过就 422，**没有强制推进**。
+
+    留一个强制开关等于这套守卫不存在：用过一次之后，每一次卡住都会用它。
+    """
+    target = str(payload.get("state") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="要推到哪一格？")
+    if not reason:
+        # **理由是必填的。** 一次说不出所以然的状态推进，复盘时读起来跟没推进一样。
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="写一句为什么现在推进——复盘时这一句就是全部的线索。")
+    try:
+        view = move_decision_state(company_id, target, reason)
+    except LedgerError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(exc)) from exc
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.post("/api/v1/companies/{company_id}/fills")
+def post_fill(company_id: int, payload: FillInput) -> dict:
+    """登记一次真实成交。
+
+    **这是「计划内 / 计划外」现在唯一的数据来源**：持仓改成只记两个数之后，
+    账本里不会再有 buy 流水，那个指标必须换源，否则永久归零且不报错。
+    """
+    try:
+        card = record_fill(company_id, payload.price,
+                           payload.filled_on.isoformat() if payload.filled_on else None,
+                           payload.shares, payload.note)
+    except LedgerError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(exc)) from exc
+    if not card:
+        raise not_found("company")
+    return card
+
+
+@app.delete("/api/v1/fills/{fill_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_fill(fill_id: int) -> Response:
+    """删掉一条成交登记。**填错价格是常事**，而错的成交价会让纪律指标一直错。"""
+    if not delete_fill(fill_id):
+        raise not_found("fill")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/v1/companies/{company_id}/decision-card/enroll")
+def post_decision_enroll(company_id: int) -> dict:
+    """把这家公司放进闭环（停在「待研究」）。
+
+    不自动给所有公司建卡：一次性把两百多家塞进「待研究」，那一格就再也没人看了。
+    """
+    view = ensure_decision_card(company_id)
+    if view is None:
+        raise not_found("company")
+    return decision_card(company_id)
+
+
+@app.get("/api/v1/rally")
+def get_rally_by_symbol(
+    symbol: str = Query(min_length=6, max_length=9),
+    window: int = Query(default=20, ge=3, le=250),
+) -> dict:
+    """按代码查任意一只 A 股的涨跌归因。**不要求它在你的研究池里。**
+
+    使用者最需要这个功能的那一刻，问的恰恰是池子外的票
+    （「那只很烂的股票凭什么连着涨停」）——他要是研究过它，也就不会看不懂了。
+
+    在池子里且日线够长就走档案那条路（判据最全）；否则用全市场底座，
+    **取不到的三样（成交量、公告、历史估值分位）会明写在返回值里**，
+    对应的判据按"不通过"算而不是按"通过"算。
+    """
+    view = rally_lookup(symbol, window)
+    if view is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"全市场底座里没有 {symbol} 这只票。六位数字的 A 股代码，"
+                   f"底座每天同步一次；新股可能还没进来。")
+    return view
+
+
+@app.get("/api/v1/companies/{company_id}/rally")
+def get_rally(company_id: int, window: int = Query(default=20, ge=3, le=250)) -> dict:
+    """这段涨跌属于什么类型。**规则层，不调模型，不花积分。**"""
+    view = rally_view(company_id, window)
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.post("/api/v1/companies/{company_id}/rally/narrate")
+def post_rally_narrate(company_id: int, window: int = Query(default=20, ge=3, le=250)) -> dict:
+    """让模型把规则层的结论讲成一段人话。**要花积分。**
+
+    分类由规则层定死，模型改不了；它说出来的数字在事实表里找不到出处会被标出来。
+    判成「无法解释」或「没什么事发生」时这一步直接跳过——
+    那两种情况下能写出来的只能是编的。
+    """
+    view = rally_narration(company_id, window)
+    if view is None:
+        raise not_found("company")
+    return view

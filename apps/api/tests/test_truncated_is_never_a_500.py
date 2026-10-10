@@ -6,7 +6,7 @@
 `stock_decision.jsonio.Truncated` 从 `post_document_digest` 一路冒到 uvicorn ——
 **我给「输出没成形」写好了页面提示（`structured: false` 那一支），
 却没让后端走得到那条路。** 这个仓里另外七个调用模型的地方全都显式接了
-Truncated（deep_report / drafting / devils_advocate / ledger_scan /
+Truncated（deep_report / drafting / devils_advocate /
 industry_chain_draft / promises / evidence_polarity），
 只有读文档这两个接口没接。
 

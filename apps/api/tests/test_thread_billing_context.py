@@ -14,7 +14,7 @@
 
 交割单读图是全站最贵的一次调用（图片 token 是文本的几十倍），
 而它当时正是这么写的。promises.py 和 devils_advocate.py 早就修过同一处，
-注释也写得很清楚 —— ledger_scan 没跟上。
+注释也写得很清楚 —— 当时 ledger_scan 没跟上（那个模块后来随读图功能一起删了）。
 
 ## 这个文件守的是「别再漏掉下一个」
 
@@ -29,11 +29,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from stock_decision import access, devils_advocate, ledger_scan, llm, promises
+from stock_decision import access, devils_advocate, llm, promises
 
 # 用了线程池的模块 → 那个函数
 CONCURRENT = [
-    (ledger_scan, "scan_screenshot"),
     (promises, "extract"),
     (devils_advocate, "_cross_check"),
 ]

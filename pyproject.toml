@@ -28,7 +28,9 @@ dependencies = [
   # 跟 Pillow 一样，这个依赖解析的是外部来源的文件（巨潮下载的 PDF），
   # 所以下限也卡在修完已知解析漏洞之后：6.x 之前有构造 PDF 触发的无限循环
   # 与递归耗尽。上限卡在 7 让下个大版本先被人看一眼。
-  "pypdf>=6,<7",
+  "pypdf>=6.19,<7",
+  # requests / AKShare 共用的 HTTP 库，2.8 修复已知请求处理漏洞。
+  "urllib3>=2.8,<3",
   # 表格结构。**纯 Python，没有系统依赖**（不需要 java/ghostscript，
   # 不像 camelot/tabula）。年报的价值几乎全在表格里，而 pypdf 只给得出一段文字：
   # 茅台 2026 半年报 11033 个单元格里 39% 是空的，纯文本抽取下它们直接消失，
@@ -38,6 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 助理（apps/assistant/mcp_server.py）：把虾米看股的几件事做成 MCP 工具交给 agent 框架。
+# **装在本仓自己的环境里，不借 nanobot 的**——那样换框架时工具服务就跟着倒了。
+assistant = [
+  "mcp>=1.30,<2",
+]
 dev = [
   "httpx>=0.28,<1",
   # **下限卡在 9.0.3 是安全线。** pip-audit 报 PYSEC-2026-1845 命中 8.4.2，

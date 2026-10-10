@@ -563,6 +563,12 @@ _RLS_ROOT_TABLES = (
     "news_feeds", "news_items", "portfolios", "research_tasks", "rule_terms",
     "screen_runs", "screen_strategies", "user_settings", "method_assessments", "counter_hits",
     "candidate_review_runs", "candidate_review_targets",
+    # 决策闭环：一家公司在闭环里停在哪一格，是**这个人自己的**判断进度，
+    # 不是关于公司的事实。所以它跟 companies 一样按用户隔离。
+    "decision_cards",
+    # 助理盯盘。提醒正文里有你的计划价和仓位计划，漏出去等于漏出你的交易计划。
+    # 按 user_id 而不是 company_id 隔离：心跳那类提醒不挂在任何一家公司上。
+    "assistant_watch_state", "assistant_alerts", "assistant_watch_runs",
 )
 
 # 挂在 companies 下面的表：归属由所属公司决定
@@ -571,6 +577,12 @@ _RLS_COMPANY_TABLES = (
     "supply_chain_links", "theses", "thesis_reviews", "trades", "valuations",
     # 管理层承诺台账：挂在公司下面，跟证据、逻辑同一个数据域。
     "management_promises",
+    # 状态推进日志。**挂 company_id 而不是 card_id**：卡片被删（公司移出档案）
+    # 时日志会跟着级联删掉，而策略要在删之前就拦得住别人来读。
+    "decision_transitions",
+    # 成交登记。同上，挂 company_id —— 而且这张表装的是**真实成交价**，
+    # 比状态日志更敏感，漏出去等于漏出别人的交易记录。
+    "decision_fills",
 )
 
 # 全局共享、**不设策略**的行情与财务数据（v32 起按 symbol 存）。
@@ -593,6 +605,8 @@ _GLOBAL_MARKET_TABLES = (
     "announcement_texts",
     # 产业链位置（年报披露的客户/供应商集中度）。同理：年报上写多少就是多少。
     "chain_positions",
+    # 产业链环节的同行（从 earth-atlas 导入）。谁跟谁同环节，谁看都一样。
+    "chain_segment_members",
 )
 
 # 挂在 research_tasks 下面的表。

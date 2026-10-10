@@ -1188,10 +1188,27 @@ class TradeSide(StrEnum):
     dividend = "dividend"     # 现金分红（税后到账）
     bonus = "bonus"           # 送股 / 转增：股数增加，成本不变
     rights = "rights"         # 配股：按配股价掏钱增持
+    # **期初持仓：唯一一种「不是交易」的记录。**
+    #
+    # 它说的不是"我在这天买了 N 股"，而是**"到这天为止，我手上有 N 股，均价 P"**。
+    # 这是会计里的期初余额，不是一笔凭空捏造的成交——两者的区别要紧：
+    # 前者是一句关于状态的断言，后者是往账本里写一件从未发生过的事
+    # （见 repository.delete_trade 的说明）。
+    #
+    # 为什么需要它：手工流水账会过期。实测这个库里两只票、39 笔流水、跨两年，
+    # 最后一笔停在 2026-03，而人早就又买卖过了；成本价 43.18 也已知是错的
+    # （读交割单时对出实际 41.74）。补齐两年流水的代价远大于它的价值，
+    # 而**这套系统本来就不是记账软件**：它要知道的是"我现在持有什么"，
+    # 精确到分的成本与收益券商 APP 上就有，而且永远比这里准。
+    #
+    # 所以期初持仓让你用三个数（代码 / 股数 / 均价）把一家公司的账一次对平，
+    # 之前那段流水就此翻篇。它**覆盖**而不是累加，见 _accumulate_positions。
+    opening = "opening"
 
 
 # 会改变股数的类型；分红不在其中
-SHARE_CHANGING = {TradeSide.buy, TradeSide.sell, TradeSide.bonus, TradeSide.rights}
+SHARE_CHANGING = {TradeSide.buy, TradeSide.sell, TradeSide.bonus,
+                  TradeSide.rights, TradeSide.opening}
 
 
 class AmountMode(StrEnum):
@@ -1380,45 +1397,6 @@ class CompanyLedger(BaseModel):
     trades: list[TradeRecord]
 
 
-class ScannedTrade(BaseModel):
-    """从截图里读出来的一条流水。**读出来不等于记进账本**——每条都要你确认。
-
-    模型认错一个数字，账本就永久错一笔；而账本错了之后所有复盘都建立在错的基础上。
-    所以这里只负责读，写进去是另一步。
-    """
-
-    side: TradeSide
-    trade_date: date | None = None
-    symbol: str = ""
-    company_name: str = ""
-    shares: float | None = None
-    price: float | None = None
-    fee: float | None = None
-    cash_amount: float | None = None
-    # 本地档案里匹配到的公司；匹配不上就是 None，由用户在确认时指定
-    company_id: int | None = None
-    matched_by: str = ""
-    confidence: str = "待确认"
-    note: str = ""
-    # 长截图切成多段读，每行本该被相邻两段各读一次。只被读到一次的，
-    # 说明有一段漏读了它——那一行没有被印证过，值得重点核。
-    seen_in: int = 1
-    cross_checked: bool = False
-
-
-class TradeScanResult(BaseModel):
-    trades: list[ScannedTrade]
-    unmatched: list[str] = []
-    warnings: list[str] = []
-    # 这张图是怎么切的（长截图必切，见 ledger_scan 的说明）
-    geometry: dict[str, Any] = {}
-    # 逐行费用 vs 页头「交易税费」合计。**这是这张图上唯一的校验和。**
-    reconcile: dict[str, Any] | None = None
-    model: str = ""
-    boundary: str = ""
-    billing: Billing = Billing()
-
-
 class AdvocateAsk(BaseModel):
     """问反方一句话。history 是上一轮返回的 messages，接着聊时原样传回来。"""
 
@@ -1454,36 +1432,68 @@ class PromiseSettle(BaseModel):
     note: str = ""
 
 
-class ScanKeep(BaseModel):
-    """记完之后还留着没记的那几条。空列表表示这次读图的结果可以整个清掉。"""
+class FillInput(BaseModel):
+    """登记一次真实成交。**在你按下单的那一刻填，不是事后补账。**
 
-    trades: list[ScannedTrade] = Field(default_factory=list, max_length=400)
-
-
-class ScanKnown(BaseModel):
-    """问一句：这批读出来的流水里，哪几条账本里已经有了。"""
-
-    portfolio_id: int
-    trades: list[ScannedTrade] = Field(default_factory=list, max_length=400)
-
-
-class TradeBatchCreate(BaseModel):
-    """确认读图结果。**这里刻意不逐条校验。**
-
-    声明成 `list[TradeCreate]` 的话，Pydantic 会在进函数之前就把整批 422 掉——
-    而 create_trades_batch 写着的承诺是「逐条独立成败」。那个承诺此前是假的：
-    截图里十条有一条读错，另外九条也一起被退回来，而那正是读图想省掉的事。
-
-    所以这一层只管形状（是个非空列表），每一条的校验挪进循环里，坏的那条单独报。
+    股数可以不填：纪律判定只看价格和日期。填了的话页面会顺手问
+    要不要把持仓也更新成这个数。
     """
 
-    trades: list[dict[str, Any]] = Field(min_length=1, max_length=200)
+    price: float = Field(gt=0, le=1e5)
+    filled_on: date | None = None
+    shares: float | None = Field(default=None, gt=0, le=1e10)
+    note: str = Field(default="", max_length=300)
 
 
-class TradeBatchResult(BaseModel):
-    created: list[TradeRecord]
-    failed: list[dict[str, Any]]
-    note: str
+class PortfolioDeleted(BaseModel):
+    """删组合的回执。**条数一定要回**：删一个空组合和删掉一个装满记录的，
+    在界面上长得一模一样。"""
+
+    deleted: bool
+    name: str
+    holdings: int
+
+
+class HoldingInput(BaseModel):
+    """一只票的持仓：两个数，就这些。
+
+    使用者定的模型：「只记持有股票数，只有一个数，新增和更新；
+    价格也是一个更新（采用成本价，更新）」。
+
+    没有方向、没有日期、没有理由 —— 那些是交易的概念，而这里记的是**现状**。
+    上下限跟 TradeCreate 一致（挡手滑多打几个零，不挡真实持仓）。
+    """
+
+    company_id: int
+    shares: float = Field(gt=0, le=1e10)
+    cost_price: float = Field(gt=0, le=1e5)
+
+
+class TradePurgeRequest(BaseModel):
+    """把某几家公司的流水整段删掉。
+
+    上限 50：这是"翻篇重来"，不是清库。真要清空整个组合，删组合本身更直接。
+    """
+
+    company_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class PurgedCompany(BaseModel):
+    company_id: int
+    name: str
+    symbol: str
+    trades: int
+
+
+class TradePurgeResult(BaseModel):
+    """**删掉了多少条一定要回给界面。**
+
+    company_ids 里混进一个不属于你的 id、或者组合选错了，删 0 条和删 34 条
+    在界面上长得一模一样——不报错，只是账本没变，而人会以为删过了。
+    """
+
+    deleted: int
+    companies: list[PurgedCompany] = Field(default_factory=list)
 
 
 class RecordRevision(BaseModel):
@@ -2021,6 +2031,18 @@ class IndustryChainNodeCreate(BaseModel):
     node_order: int | None = Field(default=None, ge=0, le=10000)
     upstream_node_id: int | None = None
     relation_type: str = Field(default="流向", max_length=30)
+    # 这一环的市场盘子(亿元人民币)+ 口径 + 出处。三者缺一就整组作废,见 _market_size_fields。
+    market_size_cny_yi: float | None = Field(default=None, gt=0)
+    market_size_basis: str = Field(default="", max_length=300)
+    market_size_source_url: str = Field(default="", max_length=1000)
+
+
+class IndustryChainNodeMarketSize(BaseModel):
+    """给已建好的节点补上市场盘子。传 null 等于取消。"""
+
+    market_size_cny_yi: float | None = Field(default=None, gt=0)
+    market_size_basis: str = Field(default="", max_length=300)
+    market_size_source_url: str = Field(default="", max_length=1000)
 
 
 class IndustryChainEdgeCreate(BaseModel):
@@ -2043,6 +2065,74 @@ class IndustryChainPositionCreate(BaseModel):
     verification: str = Field(default="待补证", max_length=20)
     valid_from: date | None = None
     valid_to: date | None = None
+
+
+class ChainCompareCompany(BaseModel):
+    """一个环节里的一家公司。行情取不到时字段留空,不从名单里删掉。"""
+
+    company_id: int
+    symbol: str
+    company: str
+    price: float | None = None
+    pe_ttm: float | None = None
+    pb: float | None = None
+    total_market_cap: float | None = None
+    revenue: float | None = None
+    net_profit: float | None = None
+    roe: float | None = None
+    gross_margin: float | None = None
+    revenue_growth: float | None = None
+    net_profit_growth: float | None = None
+    dividend_yield: float | None = None
+    change_20d: float | None = None
+    change_60d: float | None = None
+    ytd_change: float | None = None
+    sw_level1: str | None = None
+    sw_level2: str | None = None
+    fundamental_as_of: str | None = None
+    detail: str = ""
+    source_url: str = ""
+    verification: str = ""
+
+
+class ChainCompareNode(BaseModel):
+    node_id: int
+    node: str
+    stage: str
+    what: str = ""
+    count: int
+    market_cap_sum: float | None = None
+    revenue_sum: float | None = None
+    net_profit_sum: float | None = None
+    revenue_count: int = 0
+    profit_count: int = 0
+    ps: float | None = None
+    ps_count: int = 0
+    pe_median: float | None = None
+    pb_median: float | None = None
+    roe_median: float | None = None
+    gross_margin_median: float | None = None
+    missing_quote: int = 0
+    # 这一环的市场盘子(亿元人民币)与拥挤度 = 合计市值 ÷ 盘子。
+    # 没填盘子的环节这三个字段都是 None——不要拿「没有」当「不拥挤」。
+    market_size_cny_yi: float | None = None
+    market_size_basis: str = ""
+    market_size_source_url: str = ""
+    crowding: float | None = None
+    companies: list[ChainCompareCompany]
+
+
+class ChainCompareView(BaseModel):
+    """按环节横排:同一条链上,每一环的公司并排比估值与盈利。"""
+
+    theme_id: int
+    theme: str
+    description: str = ""
+    node_count: int
+    company_count: int
+    # 每一列非空的个数;整列为 0 的指标前端会收起来并说明为什么,免得「全是 —」被当成「都没涨」
+    coverage: dict[str, int] = {}
+    nodes: list[ChainCompareNode]
 
 
 class IndustryChainThemeSummary(BaseModel):
@@ -2088,6 +2178,11 @@ class IndustryChainNode(BaseModel):
     source_url: str
     verification: str
     node_order: int
+    # 市场盘子(亿元人民币)+ 口径 + 出处:横排视图用它算环节拥挤度,底图这里也带出来,
+    # 否则「填没填过」只能去数据库里看,脚本重推时会以为一个都没填过。
+    market_size_cny_yi: float | None = None
+    market_size_basis: str = ""
+    market_size_source_url: str = ""
     positions: list[IndustryChainCompanyPosition] = Field(default_factory=list)
 
 

@@ -1,13 +1,12 @@
 import { apiUrl } from "./config";
 import type { DigestTable } from "./lib/digest";
 import type {
+  ChainCompareView,
   BackupManifest,
-  ScannedTrade,
   CreditState,
   DecisionBoard,
   InboxLearning,
   PortfolioUpdateInput,
-  TradeBatchResult,
   BackupRestoreResult,
   CompanyDetail,
   CompanyFromQuoteInput,
@@ -189,6 +188,17 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     // **展开顺序有讲究**：`...options` 要在最前面。原来它排在 headers 后面，
     // 而 options 里若带 headers，整个合并好的头会被它顶掉（Content-Type 一起没）。
     // signal 放最后，保证超时那一个不会被 options 里的 undefined 覆盖掉。
+    //
+    // **调用方不要再传自己的 content-type。** 这里已经设了 `Content-Type`，
+    // 调用方再传一个小写的 `content-type`，在 JS 对象里是**两个不同的键**，
+    // 都会进 Headers，然后被合并成 `application/json, application/json` ——
+    // Starlette 认不出这是 JSON，于是整个 body 原样当字符串交给 pydantic，
+    // 回一个 `model_attributes_type` 的 422。
+    //
+    // 实测栽了四处：saveSettings（偏好存不进去）、updatePortfolio（改不了组合名）、
+    // createTradesBatch（交割单确认入账）、purgeCompanyTrades（清流水）。
+    // 四个都是**静默失败**：请求发出去了、后端回了 422、页面上什么也没变。
+    // 判据见 apps/web/src/lib/apiheaders.test.ts。
     response = await fetch(apiUrl(path), {
       ...options,
       headers: { "Content-Type": "application/json", Accept: "application/json", ...options?.headers },
@@ -588,7 +598,6 @@ export function getSettings(): Promise<UserSettings> {
 export function saveSettings(patch: Partial<UserSettings>): Promise<UserSettings> {
   return apiFetch<UserSettings>("/api/v1/settings", {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
   });
 }
@@ -765,6 +774,8 @@ export type ValuationView = {
   current_pe?: number | null;
   saved?: boolean; saved_at?: string | null; price_at_write?: number | null;
   seeded_from?: string; boundary?: string;
+  /** 每个初值是从哪个数来的。**摆在输入框旁边，不然它就是个黑箱。** */
+  seed_sources?: { bear?: string; base?: string; bull?: string; note?: string };
 };
 
 /** 钱从哪来、去了哪：两张桑基图的原料。
@@ -1324,6 +1335,11 @@ export function getIndustryChain(themeId: number): Promise<IndustryChainView> {
   return apiFetch<IndustryChainView>(`/api/v1/industry-chains/${themeId}`);
 }
 
+/** 按环节横排的对照数据;行情取自全市场底座,跟着 universe 同步任务走。 */
+export function getIndustryChainCompare(themeId: number): Promise<ChainCompareView> {
+  return apiFetch<ChainCompareView>(`/api/v1/industry-chains/${themeId}/compare`);
+}
+
 export function createIndustryChain(payload: {
   name: string; chain_type: string; description?: string;
 }): Promise<IndustryChainView> {
@@ -1457,32 +1473,71 @@ export function getCreditState(): Promise<CreditState> {
   return apiFetch<CreditState>("/api/v1/credits/state");
 }
 
-/** 删掉一笔交易。读交割单会把方向读反、会多读一行，删不掉就只能记一笔反向交易去抵消，
+/** 删掉一笔交易。手记会记错、也会记重，删不掉就只能记一笔反向交易去抵消，
  *  那等于往账本里写一笔从未发生过的事。 */
 export function deleteTrade(tradeId: number): Promise<void> {
   return apiFetch<void>(`/api/v1/trades/${tradeId}`, { method: "DELETE" });
 }
 
-/** 这批读出来的流水里，哪几条账本里已经有了（返回下标）。只标记不拦截。 */
-export function knownScanRows(portfolioId: number, trades: ScannedTrade[]): Promise<{ known: number[] }> {
-  return apiFetch(`/api/v1/ledger/scan/known`,
-    { method: "POST", body: JSON.stringify({ portfolio_id: portfolioId, trades }) });
+/** 登记一次真实成交。**在你按下单的那一刻填，不是事后补账。**
+ *
+ * 这是「计划内 / 计划外」现在唯一的数据来源：持仓改成只记两个数之后，
+ * 账本里不会再有 buy 流水，那个指标必须换源，否则永久归零且不报错。 */
+export function recordFill(companyId: number, payload: {
+  price: number; filled_on?: string; shares?: number | null; note?: string;
+}): Promise<DecisionCardView> {
+  return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/fills`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
 }
 
-/** 记完之后把还没记的存回去；一条不剩就把这次读图的结果清掉——否则点两次会记两遍。 */
-export function keepScanRows(trades: ScannedTrade[]): Promise<{ kept: number }> {
-  return apiFetch(`/api/v1/ledger/scan/keep`, { method: "POST", body: JSON.stringify({ trades }) });
+/** 删掉一条成交登记。**填错价格是常事**，而错的成交价会让纪律指标一直错。 */
+export function deleteFill(fillId: number): Promise<void> {
+  return apiFetch<void>(`/api/v1/fills/${fillId}`, { method: "DELETE" });
 }
 
-/** 点之前先问这张图要花多少分。**切片在本地做，估价不花钱。** */
-export async function estimateScanCredits(file: File): Promise<{
-  slices: number | null; credits: number | null; note: string;
+/** 删掉一个组合，连里面的持仓一起。**删了就回不来。** */
+export function deletePortfolio(portfolioId: number): Promise<{
+  deleted: boolean; name: string; holdings: number;
 }> {
-  const body = new FormData();
-  body.append("file", file);
-  const response = await fetch(apiUrl("/api/v1/ledger/scan/estimate"), { method: "POST", body });
-  if (!response.ok) throw new ApiError(`估价失败（HTTP ${response.status}）`);
-  return response.json();
+  return apiFetch(`/api/v1/portfolios/${portfolioId}`, { method: "DELETE" });
+}
+
+/** 设定一只票的持仓：N 股、成本价 P。**新增和更新是同一个动作。**
+ *
+ * 用 PUT 不用 POST：这是"把它设成这样"，不是"再加一笔"。
+ * 同一组数调两次结果一样——不会变成买了两次。 */
+export function setHolding(portfolioId: number, companyId: number,
+                           shares: number, costPrice: number): Promise<TradeRecord> {
+  return apiFetch<TradeRecord>(`/api/v1/portfolios/${portfolioId}/holdings`, {
+    method: "PUT",
+    body: JSON.stringify({ company_id: companyId, shares, cost_price: costPrice }),
+  });
+}
+
+/** 把一只票从持仓里去掉，连同它的历史。**删掉就回不来了。** */
+export function deleteHolding(portfolioId: number, companyId: number): Promise<{
+  deleted: number;
+  companies: { company_id: number; name: string; symbol: string; trades: number }[];
+}> {
+  return apiFetch(`/api/v1/portfolios/${portfolioId}/holdings/${companyId}`,
+                  { method: "DELETE" });
+}
+
+/** 把某几家公司的流水整段删掉。**删不回来。**
+ *
+ * 逐条修修不回一本烂账：停记了半年、中间又买卖过，缺的那几笔你自己也想不起来。
+ * 唯一能回到「账对得上」的路是整段翻篇 + 一条期初持仓声明现在有多少。
+ *
+ * **返回的条数一定要显示出来**：选错组合时删 0 条和删 34 条在界面上长得一样。 */
+export function purgeCompanyTrades(portfolioId: number, companyIds: number[]): Promise<{
+  deleted: number;
+  companies: { company_id: number; name: string; symbol: string; trades: number }[];
+}> {
+  return apiFetch(`/api/v1/portfolios/${portfolioId}/trades/purge`, {
+    method: "POST",
+    body: JSON.stringify({ company_ids: companyIds }),
+  });
 }
 
 /** 每个花钱的动作大概几分。典型值，不是承诺——结算按真实用量。 */
@@ -1490,34 +1545,9 @@ export function getCreditEstimates(): Promise<Record<string, number | null>> {
   return apiFetch<Record<string, number | null>>("/api/v1/credits/estimates");
 }
 
-/** 读一张券商交割单截图。**只读不写**——每条流水都要确认后才进账本。 */
-export async function scanLedgerScreenshot(file: File, hint = "", companyId: number | null = null): Promise<BackgroundJob> {
-  const body = new FormData();
-  body.append("file", file);
-  body.append("hint", hint);
-  // 个股交易记录页每行都没有股票代码，指定一次比让模型逐段猜可靠。
-  if (companyId !== null) body.append("company_id", String(companyId));
-  const response = await fetch(apiUrl("/api/v1/ledger/scan"), { method: "POST", body });
-  if (!response.ok) {
-    const detail = await response.json().catch(() => ({}));
-    throw new ApiError(detail.detail ?? `提交失败（HTTP ${response.status}）`);
-  }
-  return response.json();
-}
-
-/** 确认读图结果，逐条记入。一条失败不影响其余。 */
-export function createTradesBatch(portfolioId: number, trades: TradeInput[]): Promise<TradeBatchResult> {
-  return apiFetch<TradeBatchResult>(`/api/v1/portfolios/${portfolioId}/trades/batch`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ trades }),
-  });
-}
-
 export function updatePortfolio(portfolioId: number, payload: PortfolioUpdateInput): Promise<PortfolioSummary> {
   return apiFetch<PortfolioSummary>(`/api/v1/portfolios/${portfolioId}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
 }
@@ -1593,4 +1623,283 @@ export type AccessView = {
 };
 export function getAccess(): Promise<AccessView> {
   return apiFetch<AccessView>("/api/v1/access");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 我的判断 · 做 T 回测 / 决策闭环 / 涨跌类型
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** 做 T 回测：规律检验 + 四条策略的机器模拟。**纯算术，不花积分。** */
+export type SwingConditional = {
+  label: string; hits: number; total: number; rate: number | null;
+  base: number; lift: number | null; p_value: number | null;
+};
+export type SwingRhythm = {
+  enough: boolean; days: number; note?: string;
+  start?: string; end?: string; verdict?: string; headline?: string;
+  up_days?: number; down_days?: number; flat_days?: number;
+  base_up?: number; base_down?: number;
+  reversal?: SwingConditional; rebound?: SwingConditional; alpha?: number;
+  autocorrelation_1?: number | null; autocorrelation_2?: number | null;
+  mean_abs_return?: number; mean_amplitude?: number | null; amplitude_days?: number;
+  daily_sigma?: number | null;
+  volatility_5d?: number | null; volatility_20d?: number | null; volatility_window?: number | null;
+  runs?: {
+    max_up: number; max_down: number;
+    up_histogram: { length: number; times: number }[];
+    down_histogram: { length: number; times: number }[];
+  };
+};
+export type SwingRun = {
+  ok: boolean; strategy: string; label: string; blurb?: string; days: number;
+  start?: string; end?: string; trades: number; note?: string;
+  wins?: number; win_rate?: number; gross?: number; fees?: number; net?: number;
+  net_percent?: number | null; net_per_trade?: number; fee_share?: number | null;
+  breakeven_spread?: number | null; max_drawdown?: number;
+  /** 这个结果跟运气分得开吗。**正收益必须当场配上它**。 */
+  win_rate_p_value?: number | null; t_stat?: number | null; small_sample?: boolean;
+  curve?: { date: string; cumulative: number }[];
+  skipped_locked: number; skipped_no_open: number; not_triggered: number;
+  base_shares?: number; tactical_shares?: number; base_value?: number;
+};
+export type SwingView = {
+  company_id: number; symbol: string; name: string;
+  rhythm: SwingRhythm; runs: SwingRun[];
+  ceiling_line: string; cost_line: string; best_line: string;
+  strategies: Record<string, { label: string; blurb: string; why: string }>;
+  cost_labels: Record<string, string>;
+  caveats: string[];
+  bars_available: number; window: number; windows: number[];
+  trigger_percent: number; base_shares: number; tactical_percent: number;
+  shares_held: number | null; missing_open_days: number;
+};
+export type SwingOptions = {
+  window?: number; trigger_percent?: number; base_shares?: number;
+  tactical_percent?: number;
+  commission_rate?: number; commission_min?: number; stamp_tax_rate?: number;
+  transfer_fee_rate?: number; slippage_rate?: number;
+};
+
+export function getSwingStudy(companyId: number, options: SwingOptions = {}): Promise<SwingView> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null) query.set(key, String(value));
+  }
+  const suffix = query.toString() ? `?${query}` : "";
+  return apiFetch<SwingView>(`/api/v1/companies/${companyId}/swing${suffix}`);
+}
+
+/** 决策闭环：每只票只能停在一格上，走到下一格需要的东西是机器能判的。 */
+export type DecisionBand = { key: string; label: string; means: string };
+export type DecisionPlanField = {
+  key: string; label: string; kind: string; required: boolean; hint: string;
+};
+export type DecisionGuard = {
+  key: string; label: string; ok: boolean; fix: string;
+  /** 这一条补在哪儿。**没有它，"去公司档案的逻辑与证据写下核心主张"
+   *  就只是一句话——人得自己找页面、找页签、再往下滚。** */
+  goto: { where: "card" | "company" | "portfolio"; tab?: string;
+          anchor?: string; label: string } | null;
+};
+export type DecisionTarget = {
+  state: string; label: string; ok: boolean; reason: string;
+  missing: { key: string; label: string; fix: string }[];
+  /** 这一步要不要你亲手写一句。往前走的那一步不用——机器按"哪几格齐了"自己写。
+   *  退回 / 搁置 / 决定买 仍然必须自己写，为什么见 reason_why。 */
+  reason_required: boolean;
+  reason_why: string;
+  /** 留空时机器会写的那一句，提前给页面当占位符——**让人看见它要替你写什么**。 */
+  auto_reason: string;
+};
+export type DecisionMove = {
+  from_state: string; to_state: string; actor: string; reason: string;
+  price_at_move: number | null; created_at: string;
+};
+export type DecisionCardView = {
+  company_id: number; symbol: string; name: string; industry: string;
+  state: string; state_label: string; state_means: string; state_next: string;
+  entered_at: string; entered_reason: string; watch_reason: string;
+  bands: Record<string, number>; band_specs: DecisionBand[];
+  plan_fields: DecisionPlanField[]; position_plan: Record<string, number | string>;
+  /** 这一笔打算买什么价、买多少。跟 position_plan 不是一回事（那是整只票的总规划）。 */
+  order_fields: DecisionPlanField[]; order_plan: Record<string, number | string>;
+  price: number | null; price_date: string | null;
+  current_band: string | null; current_band_label?: string;
+  last_trigger: { band: string | null; label?: string; price: number | null; date: string | null } | null;
+  guards: DecisionGuard[]; targets: DecisionTarget[];
+  blocked: { state: string; label: string; reason: string }[];
+  checklist: string[]; history: DecisionMove[]; states: Record<string, string>;
+  /** 按「我的估值」的基准每股价值推的一组价格带建议。取不到估值时是 null。
+   *  **是建议不是推荐买点**：三个系数是人定的规矩，算式跟着一起给。 */
+  suggested_bands: SuggestedBands | null;
+  /** 每一块各自是什么时候定的、依据哪一期财报。
+   *  用的不是整张卡的 updated_at —— 那个会被"今天改了仓位计划"刷掉。 */
+  block_stamps: Record<string, { set_at?: string; valuation_saved_at?: string | null;
+                                 base_report_date?: string | null; per_share_base?: number | null }>;
+  /** 你自己写下的几个数对不对得上（计划价 vs 基准每股价值 vs 合理区）。 */
+  reconcile: string[];
+  /** 定价格带之后财报换过期了没有。空字符串 = 没过期。 */
+  bands_stale: string;
+  valuation_per_share_base: number | null;
+  valuation_base_report_date: string | null;
+  /** 这张卡上登记过的成交。**纪律指标的原料就是它**，所以要看得见、改得掉。 */
+  fills: DecisionFill[];
+};
+export type DecisionFill = {
+  id: number; filled_on: string; price: number; shares: number | null;
+  /** 登记当时卡上写的计划价，**快照**——卡片之后被改也不影响这条记录。 */
+  planned_price: number | null; planned_fraction: string;
+  state_then: string; note: string; created_at: string;
+};
+export type SuggestedBands = {
+  bands: Record<string, number>;
+  rows: { key: string; value: number; formula: string; means: string }[];
+  per_share_base: number;
+  safety_margin: number; watch_premium: number; extreme_multiple: number;
+  as_of: string | null; base_report_date: string | null;
+  is_convention: boolean; note: string;
+};
+export type DecisionLoopItem = {
+  company_id: number; symbol: string; name: string; industry: string;
+  state: string; state_label: string; entered_at: string; entered_reason: string;
+  watch_reason: string; price: number | null; price_date: string | null;
+  bands: Record<string, number>; band: string | null; band_label?: string;
+  ideal_low: number | null; ideal_high: number | null;
+  total_percent: number | null;
+  last_trigger_band: string | null; last_trigger_label?: string;
+  last_trigger_price: number | null; last_trigger_date: string | null;
+  ready: boolean;
+};
+export type DisciplineTrade = {
+  id: number; company_id: number; company_name: string; symbol: string;
+  side: string; trade_date: string; price: number | null; rationale: string;
+  band?: string | null; band_label?: string; state_then?: string; why?: string;
+  /** 写过计划价就顺带对账：成交价离它多远。 */
+  planned_price?: number | null; price_drift?: number | null; fraction?: string | null;
+};
+export type DecisionLoopView = {
+  groups: {
+    state: string; label: string; means: string; next: string;
+    actionable: boolean; items: DecisionLoopItem[]; count: number;
+  }[];
+  total: number; not_in_loop: number;
+  discipline: {
+    inside: DisciplineTrade[]; outside: DisciplineTrade[]; undecidable: DisciplineTrade[];
+    inside_count: number; outside_count: number; undecidable_count: number;
+    sell_count: number; discipline_rate: number | null; sell_note: string;
+  };
+  states: Record<string, { label: string; means: string; next: string }>;
+  state_order: string[];
+};
+
+export function getDecisionLoop(): Promise<DecisionLoopView> {
+  return apiFetch<DecisionLoopView>("/api/v1/decision-loop");
+}
+export function evaluateDecisionTriggers(): Promise<{
+  count: number;
+  moved: { company_id: number; symbol: string; name: string; band_label: string;
+           price: number; date: string; note: string }[];
+}> {
+  return apiFetch("/api/v1/decision-loop/evaluate", { method: "POST" });
+}
+export function getDecisionCard(companyId: number): Promise<DecisionCardView> {
+  return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card`);
+}
+export function enrollDecisionCard(companyId: number): Promise<DecisionCardView> {
+  return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card/enroll`,
+    { method: "POST" });
+}
+export function saveDecisionCard(companyId: number, payload: {
+  watch_reason?: string; bands?: Record<string, number | null>;
+  position_plan?: Record<string, number | string | null>;
+  order_plan?: Record<string, number | string | null>;
+}): Promise<DecisionCardView> {
+  return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card`,
+    { method: "POST", body: JSON.stringify(payload) });
+}
+export function moveDecisionState(companyId: number, state: string, reason: string):
+    Promise<DecisionCardView> {
+  return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card/move`,
+    { method: "POST", body: JSON.stringify({ state, reason }) });
+}
+
+/** 这段涨跌属于什么类型。规则层不花积分；那段解释要花。 */
+export type RallyCheck = { text: string; ok: boolean; detail: string };
+export type RallyType = {
+  key: string; label: string; means: string; for_you: string;
+  checks: RallyCheck[]; hit: boolean; hit_count: number; total: number;
+};
+export type RallyFacts = {
+  ok: boolean; note?: string;
+  company_id: number; symbol: string; name: string; board?: string;
+  limit_percent?: number; window_days?: number; windows?: number[];
+  start_date?: string; end_date?: string; start_close?: number; end_close?: number;
+  change?: number | null;
+  industry?: { name: string | null; peer_count: number; median_change: number | null;
+               rank_percentile?: number | null; note?: string };
+  /** 同产业链环节的同行（来自 earth-atlas）。**逐家点名，不算中位数** ——
+   *  155 个环节里公司数中位只有 2，两家的中位数只是其中一家。 */
+  chain_peers?: {
+    groups: {
+      key: string; chain_label: string; stage: string; segment_label: string; what: string;
+      peer_count: number; median_change: number | null; enough: boolean;
+      members: { symbol: string; name: string; change: number | null; self: boolean;
+                 source_url: string; source_title: string; accessed: string }[];
+    }[];
+    best: string | null; note: string;
+  };
+  volume?: { window_avg: number | null; prior_avg: number | null; ratio: number | null };
+  limit_up_days?: number; max_limit_streak?: number;
+  turnover_rate?: number | null; float_market_cap?: number | null;
+  valuation?: {
+    pe_start: number | null; pe_end: number | null; pe_change: number | null;
+    pe_start_date: string | null; pe_end_date: string | null; pe_end_derived: boolean;
+    earnings_share: number | null; report_in_window: boolean; report_dates: string[];
+    report_date_caveat: string; pe_percentile_start: number | null; pe_sample: number;
+  };
+  events?: { event_date: string; title: string; category: string;
+             relevance: string; relevance_from?: string; relevance_reason?: string }[];
+  event_count?: number; high_relevance_count?: number;
+  post_event?: { share: number; day_share: number; covered_days: number;
+                 tradable_days: number; lift: number | null; events_used: number } | null;
+  /** 池子外的票走全市场底座，少了成交量/公告/估值分位三样——**明写出来，别让人从空值里猜**。 */
+  events_available?: boolean;
+  source?: string;
+  unavailable?: string[];
+  enrich_hint?: string;
+  requested_window?: number;
+};
+export type RallyVerdict = {
+  ok: boolean; note?: string;
+  primary?: string; hit_types?: string[]; floor?: number;
+  /** 门槛是按这只票自己的波动算的，还是缺数据退回了通用式子。 */
+  floor_basis?: string; prior_daily_sigma?: number | null;
+  /** 「行业性」那条判据实际用的是哪个对照组：产业链环节还是申万一级。 */
+  peer_source?: string; peer_median?: number | null;
+  suppressed_by_floor?: boolean; magnitude?: number;
+  types?: RallyType[]; headline?: string; accounting_note?: string;
+};
+export type RallyNarration = {
+  ok: boolean; skipped?: boolean; note?: string;
+  story?: string; meaning?: string; what_to_check?: string[];
+  untraceable?: string[]; model?: string; credits?: number | null;
+};
+export type RallyView = {
+  facts: RallyFacts; verdict: RallyVerdict;
+  types?: { key: string; label: string; means: string; for_you: string }[];
+  narration?: RallyNarration;
+};
+
+export function getRally(companyId: number, window = 20): Promise<RallyView> {
+  return apiFetch<RallyView>(`/api/v1/companies/${companyId}/rally?window=${window}`);
+}
+
+/** 按代码查任意一只 A 股。**不要求它在研究池里**——最想问的那几只本来就不在。 */
+export function lookupRally(symbol: string, window = 20): Promise<RallyView> {
+  return apiFetch<RallyView>(
+    `/api/v1/rally?symbol=${encodeURIComponent(symbol)}&window=${window}`);
+}
+export function narrateRally(companyId: number, window = 20): Promise<RallyView> {
+  return apiFetch<RallyView>(
+    `/api/v1/companies/${companyId}/rally/narrate?window=${window}`, { method: "POST" });
 }

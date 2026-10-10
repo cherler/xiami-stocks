@@ -1,23 +1,23 @@
-我：[股票买卖开源项目推荐](chatgpt-conversation://6a6f4f2a-5534-83e8-8cc0-a5949b9f1f2c) 根据这个对话，帮我先打个底，创建股票决策台的xiamimate子项目，并给出 项目初始产品文档
+我：股票买卖开源项目推荐（早期设计讨论） 根据这个对话，帮我先打个底，创建股票决策台的xiamimate子项目，并给出 项目初始产品文档
 
-ChatGPT：已按新名称从头建立：[xiamimate-stock-lab](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab)。
+ChatGPT：已按新名称从头建立：[xiamimate-stock-lab](/path/to/projects/xiamimate-stock-lab)。
 
 原 `xiamimate-stock/` 目录已不存在，项目内也没有残留旧名称引用。
 
 当前内容：
 
-- [初始产品文档](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/PRODUCT.md)：包括产品定位、不做清单、信息架构、AI 规范、数据模型、MVP 验收、四阶段路线和风险控制。
-- [前端原型](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/web/src/App.tsx)：React + TypeScript + Vite + ECharts。
+- [初始产品文档](/path/to/projects/xiamimate-stock-lab/docs/PRODUCT.md)：包括产品定位、不做清单、信息架构、AI 规范、数据模型、MVP 验收、四阶段路线和风险控制。
+- [前端原型](/path/to/projects/xiamimate-stock-lab/apps/web/src/App.tsx)：React + TypeScript + Vite + ECharts。
   - 投资逻辑账本
   - 待核验事件
   - 行业市场云图
   - 组合行业暴露
   - 自选公司与估值分位
   - 搜索及手机响应式布局
-- [API 骨架](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/main.py)：FastAPI，已有健康检查和决策总览接口。
-- [领域模型](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/schemas.py)：逻辑状态、证据事件、自选股、市场云图、组合暴露等接口契约。
-- [项目说明](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)：包含目录结构、运行方式和当前边界。
-- 根目录 [README](/Users/liuzhenhai/projects/xiamimate/README.md) 也已改为新项目名称。
+- [API 骨架](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/main.py)：FastAPI，已有健康检查和决策总览接口。
+- [领域模型](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/schemas.py)：逻辑状态、证据事件、自选股、市场云图、组合暴露等接口契约。
+- [项目说明](/path/to/projects/xiamimate-stock-lab/README.md)：包含目录结构、运行方式和当前边界。
+- 根目录 [README](/path/to/projects/README.md) 也已改为新项目名称。
 
 设计上受前端设计指引影响，首屏核心是“投资逻辑是否仍成立”，没有套用短线行情软件的涨跌榜、分时图或买卖信号。
 
@@ -34,7 +34,7 @@ ChatGPT：已按新名称从头建立：[xiamimate-stock-lab](/Users/liuzhenhai/
 启动前端：
 
 ```bash
-cd /Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab
+cd /path/to/projects/xiamimate-stock-lab
 npm run dev
 ```
 
@@ -43,7 +43,7 @@ npm run dev
 
 我：http://localhost:5173 已经被xiamimate-admin 占了。包括http://localhost:8000 端口也不好，很容易被占，你换端口 。记得写到README里
 
-ChatGPT：端口已换好，并写入 [README](</Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md>)：
+ChatGPT：端口已换好，并写入 [README](</path/to/projects/xiamimate-stock-lab/README.md>)：
 
 - 前端：`http://localhost:5217`
 - API：`http://localhost:8108`
@@ -57,7 +57,7 @@ ChatGPT：端口已换好，并写入 [README](</Users/liuzhenhai/projects/xiami
 前端是只有展示功能是吗？无法切换、无法点击
 api的log如下：
 ❯ uvicorn stock_decision.main:app --reload --app-dir apps/api --port 8108
-INFO:     Will watch for changes in these directories: ['/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab']
+INFO:     Will watch for changes in these directories: ['/path/to/projects/xiamimate-stock-lab']
 INFO:     Uvicorn running on http://127.0.0.1:8108 (Press CTRL+C to quit)
 INFO:     Started reloader process [89617] using WatchFiles
 
@@ -99,7 +99,7 @@ ChatGPT：对，目前前端主要是“可运行的交互式展示原型”，�
 - 总览数据：`http://localhost:8108/api/v1/dashboard`
 - 接口文档：`http://localhost:8108/docs`
 
-当前 API 只有健康检查和演示总览两个接口，数据来自 [demo_data.py](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/demo_data.py)，没有数据库，也没有真实行情。
+当前 API 只有健康检查和演示总览两个接口，数据来自 [demo_data.py](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/demo_data.py)，没有数据库，也没有真实行情。
 
 ### 当前项目阶段
 
@@ -130,7 +130,7 @@ ChatGPT：对，目前前端主要是“可运行的交互式展示原型”，�
 
 如果以“个人真正可以长期使用的 MVP”为 100%，当前大约在 **15%–20%**：产品方向和技术底座已有，但核心数据闭环还没有开发。
 
-详细范围在 [初始产品文档](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/PRODUCT.md)，当前运行说明在 [README](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)。
+详细范围在 [初始产品文档](/path/to/projects/xiamimate-stock-lab/docs/PRODUCT.md)，当前运行说明在 [README](/path/to/projects/xiamimate-stock-lab/README.md)。
 
 下一步应该进入阶段 1，先完成：
 
@@ -151,17 +151,17 @@ ChatGPT：对，目前前端主要是“可运行的交互式展示原型”，�
 - “公司档案”可新建公司。
 - 公司详情可新增投资逻辑、归档支持/反证证据、记录事件。
 - 可修改投资逻辑状态，以及事件的核验状态。
-- 所有录入保存到本机 [`var/stock_decision.db`](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/var/stock_decision.db)。
+- 所有录入保存到本机 [`var/stock_decision.db`](/path/to/projects/xiamimate-stock-lab/var/stock_decision.db)。
 
 首次启动会生成 3 份“示例”档案，用来体验流程；你新建的真实公司和研究记录会持久保存，不会因刷新页面丢失。
 
 本轮完成的主要文件：
 
-- [SQLite 数据库初始化与示例档案](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/database.py)
-- [研究档案查询与写入逻辑](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
-- [读写 API](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/main.py)
-- [可导航、可编辑前端](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/web/src/App.tsx)
-- [更新后的运行说明](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)
+- [SQLite 数据库初始化与示例档案](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/database.py)
+- [研究档案查询与写入逻辑](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
+- [读写 API](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/main.py)
+- [可导航、可编辑前端](/path/to/projects/xiamimate-stock-lab/apps/web/src/App.tsx)
+- [更新后的运行说明](/path/to/projects/xiamimate-stock-lab/README.md)
 
 新增 API 包括公司列表/详情、新建公司、新建逻辑、新建证据、新建事件、更新逻辑状态、更新事件核验状态；完整接口可在 `http://localhost:8108/docs` 查看。
 
@@ -198,11 +198,11 @@ ChatGPT：StockSDK 已接入，虚构行情与示例档案已移除。
 
 主要实现位置：
 
-- [StockSDK Node 桥接](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/scripts/stock-sdk-quotes.mjs)
-- [行情适配器](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/market_data.py)
-- [SQLite 快照与同步存储](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
-- [刷新接口](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/main.py)
-- [更新后的说明](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)
+- [StockSDK Node 桥接](/path/to/projects/xiamimate-stock-lab/scripts/stock-sdk-quotes.mjs)
+- [行情适配器](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/market_data.py)
+- [SQLite 快照与同步存储](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
+- [刷新接口](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/main.py)
+- [更新后的说明](/path/to/projects/xiamimate-stock-lab/README.md)
 
 也可直接调用：
 
@@ -390,9 +390,9 @@ ChatGPT：是的，截图里的空白属于当前功能尚未自动化的部分�
 
 我已把六类参考项目逐项标记为“已实现 / 部分实现 / 未实现”，并写了依赖顺序与每项验收标准：
 
-- [实施任务清单](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
-- [初始产品文档](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/PRODUCT.md)
-- [README](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)
+- [实施任务清单](/path/to/projects/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
+- [初始产品文档](/path/to/projects/xiamimate-stock-lab/docs/PRODUCT.md)
+- [README](/path/to/projects/xiamimate-stock-lab/README.md)
 
 建议下一步先做 P0.1 和 P0.2：建立标准数据适配层，并实现“输入股票代码即可真实校验、自动补全、加入自选股”。这会先解决公司档案基础信息仍需手填的问题，也为后续财务、公告、新闻接入打好底座。
 
@@ -407,10 +407,10 @@ ChatGPT：是的，截图里的空白属于当前功能尚未自动化的部分�
 
 相关文件：
 
-- [数据源适配层](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/providers)
-- [新增公司与数据状态 API](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/main.py)
-- [前端交互](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/web/src/App.tsx)
-- [实施清单](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
+- [数据源适配层](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/providers)
+- [新增公司与数据状态 API](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/main.py)
+- [前端交互](/path/to/projects/xiamimate-stock-lab/apps/web/src/App.tsx)
+- [实施清单](/path/to/projects/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
 
 验证通过：4 个 API 测试、前端类型检查和生产构建均通过。下一步可继续完成自选股分组、移除/排序和持仓账本，或进入财务与公告数据源接入。
 
@@ -427,10 +427,10 @@ ChatGPT：是的，截图里的空白属于当前功能尚未自动化的部分�
 
 主要改动：
 
-- [日线数据 Provider](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/providers/stock_sdk.py)
-- [市场数据存储与区间计算](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
-- [公司档案市场事实区](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/web/src/App.tsx)
-- [趋势图组件](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/apps/web/src/components/PriceTrend.tsx)
+- [日线数据 Provider](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/providers/stock_sdk.py)
+- [市场数据存储与区间计算](/path/to/projects/xiamimate-stock-lab/apps/api/stock_decision/repository.py)
+- [公司档案市场事实区](/path/to/projects/xiamimate-stock-lab/apps/web/src/App.tsx)
+- [趋势图组件](/path/to/projects/xiamimate-stock-lab/apps/web/src/components/PriceTrend.tsx)
 
 验证通过：5 个 API 测试与前端类型检查均通过。下一步应接入财务数据，先补营收、利润、ROE、现金流和负债趋势。
 
@@ -447,9 +447,9 @@ ROE 目前只对年度报告估算，非年报不会伪装成年报 ROE。财报
 
 文档已更新：
 
-- [README.md](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/README.md)
-- [初始产品文档](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/PRODUCT.md)
-- [实施清单](/Users/liuzhenhai/projects/xiamimate/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
+- [README.md](/path/to/projects/xiamimate-stock-lab/README.md)
+- [初始产品文档](/path/to/projects/xiamimate-stock-lab/docs/PRODUCT.md)
+- [实施清单](/path/to/projects/xiamimate-stock-lab/docs/IMPLEMENTATION_BACKLOG.md)
 
 下一步建议做 P0.4：持仓与交易决策账本，把持仓、成本、买卖记录和当时的投资逻辑关联起来。
 

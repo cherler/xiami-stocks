@@ -122,28 +122,10 @@ step "构建 + 首屏预算" run "VITE_BASE=/stocks/ npm run build 2>&1 | tail -
 # **这台机器的 npm 指向 npmmirror，而它没实现 audit 接口**（实测 404
 # `[NOT_IMPLEMENTED] /-/npm/v1/security/*`）。查不了就得说查不了 ——
 # 不能因为"命令没报错"就当成没有漏洞，那是这支脚本最不该犯的错。
-audit_frontend() {
-  local out registry
-  registry=$(npm config get registry)
-  out=$(npm audit --omit=dev --audit-level=high 2>&1) || true
-  # 镜像源查不了就自动换官方源再试一次（实测官方源可达、返回 0 vulnerabilities）。
-  # 两边都不行才算没查成 —— 而"没查成"是失败，不是通过。
-  if echo "$out" | grep -q "NOT_IMPLEMENTED\|audit endpoint returned an error"; then
-    echo "   $registry 不支持 audit，换官方源再试一次…"
-    out=$(npm --registry=https://registry.npmjs.org audit --omit=dev --audit-level=high 2>&1) || true
-  fi
-  echo "$out" | tail -5
-  if echo "$out" | grep -q "NOT_IMPLEMENTED\|audit endpoint returned an error"; then
-    echo "   官方源也没查成 —— **这一项是空的**，别当成通过了。"
-    return 1
-  fi
-  echo "$out" | grep -qE "found [1-9][0-9]* (high|critical)" && return 1
-  return 0
-}
-step "前端生产依赖漏洞" audit_frontend
+step "前端生产依赖漏洞" bash scripts/audit-dependencies.sh frontend
 
 if ./.venv/bin/python -c "import pip_audit" 2>/dev/null; then
-  step "Python 依赖漏洞" bash -c "./.venv/bin/python -m pip_audit --progress-spinner off 2>&1 | tail -5"
+  step "Python 依赖漏洞" bash scripts/audit-dependencies.sh python
 else
   echo
   echo "── Python 依赖漏洞 ──────────────────────"

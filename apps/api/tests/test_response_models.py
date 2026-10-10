@@ -52,17 +52,11 @@ def _declared(model: type[BaseModel]) -> set[str]:
 # (响应模型, 这个模型要覆盖的键) —— 键取自 repository 实际返回的形状。
 # 加字段时把它加进这里，忘了声明就会在这条测试上红。
 CONTRACTS: list[tuple[type[BaseModel], set[str]]] = [
-    (schemas.ScannedTrade, {
-        "side", "trade_date", "symbol", "company_name", "shares", "price", "fee",
-        "cash_amount", "company_id", "matched_by", "confidence", "note",
-        # 长截图切成多段读之后加的：这一行被几段读到、有没有互相印证
-        "seen_in", "cross_checked",
-    }),
-    (schemas.TradeScanResult, {
-        "trades", "unmatched", "warnings", "model", "boundary", "billing",
-        "geometry",      # 这张图怎么切的
-        "reconcile",     # 逐行费用 vs 页头「交易税费」——这张图上唯一的校验和
-    }),
+    # **清流水是全站破坏力最大的接口**，它的响应形状要钉死：
+    # deleted 少一个字段，页面就说不出"到底删掉了几条"，
+    # 而删 0 条和删 34 条在界面上长得一模一样。
+    (schemas.TradePurgeResult, {"deleted", "companies"}),
+    (schemas.PurgedCompany, {"company_id", "name", "symbol", "trades"}),
     (schemas.ResearchTaskItem, {
         "id", "task_id", "symbol", "name", "industry", "evidence", "status", "note",
         "verdict", "reasons", "concerns",          # 白屏那次少的就是这三个

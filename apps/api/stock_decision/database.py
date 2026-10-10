@@ -25,7 +25,7 @@ _default_path = Path(__file__).resolve().parents[3] / "var" / "stock_decision.db
 _database_path = Path(os.getenv("XIAMI_STOCK_DB", _default_path)).resolve()
 
 # 结构版本随每次表结构变更递增；备份文件会记录它，恢复时用于判断兼容性。
-SCHEMA_VERSION = 56
+SCHEMA_VERSION = 57
 
 
 def backend() -> str:
@@ -452,6 +452,12 @@ _SCHEMA_SQL = """
                 symbol TEXT NOT NULL,
                 trade_date TEXT NOT NULL,
                 close REAL NOT NULL,
+                -- 开盘价。**日内做 T 的模拟全靠它**：没有分时数据的情况下，
+                -- 「开盘卖、收盘买回」是唯一一对能在日线上诚实定价的成交。
+                -- 两个日线源都给了 open，只是这张表一直没存。
+                -- 列名不写 open：OPEN 在 SQL 标准里是保留字，PG 现在容得下、
+                -- 换个后端就不一定，为一个省两个字的列名冒这个险不值。
+                open_price REAL,
                 high REAL,
                 low REAL,
                 volume REAL,
@@ -1441,6 +1447,12 @@ def _initialize_sqlite() -> None:
                 source_url TEXT NOT NULL DEFAULT '',
                 verification TEXT NOT NULL DEFAULT '待补证',
                 node_order INTEGER NOT NULL DEFAULT 0,
+                -- 这一环的市场盘子（亿元人民币），用来算「环节拥挤度 = 这一环 A 股合计市值 ÷ 盘子」。
+                -- 三列一起写：没有口径和出处的盘子不能用——全球还是中国、收入还是投资额，
+                -- 换个口径这个比值能差一个数量级。填不上就三列都空着，前端据此不显示拥挤度。
+                market_size_cny_yi REAL,
+                market_size_basis TEXT NOT NULL DEFAULT '',
+                market_size_source_url TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(user_id, theme_id, stage_id, name)
@@ -1617,8 +1629,210 @@ def _initialize_sqlite() -> None:
                 UNIQUE(company_id, version)
             );
             CREATE INDEX IF NOT EXISTS idx_reports_company ON research_reports(company_id, version DESC);
+
+            -- ── 决策闭环 ───────────────────────────────────────────────────
+            --
+            -- 一家公司在闭环里只能停在**一个**状态上。这张表就是那个状态，
+            -- 外加进入这个状态需要用到的两样东西：价格带与仓位计划。
+            --
+            -- **这张表不复制任何已有的事实。** 投资逻辑在 theses、估值在
+            -- valuations、持仓在 trades —— 状态机只判断「这几样齐了没有」，
+            -- 不另存一份。复制出来的第二份迟早会跟第一份说的不一样，而那时候
+            -- 没人知道该信哪份。
+            CREATE TABLE IF NOT EXISTS decision_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                state TEXT NOT NULL DEFAULT 'discovered',
+                -- 进入当前状态的时间与当时写下的理由。**理由是必填的**：
+                -- 一次说不出所以然的状态推进，复盘时读起来跟没推进一样。
+                entered_at TEXT NOT NULL,
+                entered_reason TEXT NOT NULL DEFAULT '',
+                -- 为什么关注它。状态机的第一格（待研究）就只要这一句。
+                watch_reason TEXT NOT NULL DEFAULT '',
+                -- 价格带：观察 / 合理 / 理想 / 极端机会，记每一段的**上沿**，从高到低。
+                -- 上沿的意思是「跌到这个价就算进了这一段」：写 300，300 算合理区、301 不算。
+                -- 存成一个 JSON 是因为它们必须一起改：只改一段会让四段交叠或留空隙，
+                -- 而交叠的价格带会让同一个价同时命中两段。
+                bands TEXT NOT NULL DEFAULT '{}',
+                -- 仓位计划：计划总仓位、首次、二次、三次加仓、暂停条件。
+                -- 价格解决赔率，仓位解决判断错误 —— 两者分开存，也分开校验。
+                position_plan TEXT NOT NULL DEFAULT '{}',
+                -- **这一笔**打算买什么价、买多少。跟 position_plan 不是一回事：
+                -- 那个是整只票的总规划，这个是「我现在决定下的这一单」。
+                -- 分开是因为纪律判定要的正是后者：成交价离你写下的计划价多远。
+                order_plan TEXT NOT NULL DEFAULT '{}',
+                -- 最近一次价格触发：命中了哪一段、什么价、哪一天。
+                -- **触发只是把它推进「触发检查」，从来不代表该买。**
+                last_trigger_band TEXT NOT NULL DEFAULT '',
+                last_trigger_price REAL,
+                last_trigger_date TEXT,
+                -- **每一块各自记自己是什么时候定的，以及依据是哪一期财报。**
+                --
+                -- 使用者的原话：「在过去正确的记录数字，放在现在就是错的」。
+                -- 价格带没有自己的有效期 —— 它由基准每股价值推出，而那个数来自
+                -- 某一期财报；那期被新的一期顶掉，这组价格带就跟着过时，
+                -- **而它在页面上长得跟今天刚定的一模一样**。
+                --
+                -- 为什么不用 updated_at：那是整张卡的。今天改一下仓位计划，
+                -- updated_at 就动了，而价格带其实还是去年那组 —— 于是唯一一个
+                -- 能说明"这组数有多旧"的信号被抹掉了。
+                --
+                -- 形状 {块名: {set_at, ...出处}}，块名是 bands / position_plan / order_plan。
+                -- 存 JSON 而不是三个列：出处字段每块都不一样（价格带要记
+                -- base_report_date 和当时的每股价值，仓位计划不需要）。
+                block_stamps TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (user_id, company_id)
+            );
+
+            -- 真的动手了那一刻记一次。**这不是记账，是决策的结果。**
+            --
+            -- 「计划内 / 计划外交易」是这整套闭环存在的唯一理由，而它原来查的是
+            -- trades 里的 buy —— 2026-09-23 持仓改成「只记股数和成本价」之后，
+            -- 账本里再也不会出现 buy，那个指标就**永久变成 0/0 且不报错**。
+            --
+            -- 所以成交登记挪到这里：你按下单的那一刻填一次实际成交价，
+            -- 而不是事后去账本里补一笔流水。一个动作，发生在你真正动手的时候。
+            --
+            -- **计划价单独存一份快照**，不是事后去卡片上现查：卡片上的计划价
+            -- 会被后来的修改改掉，而"我当时计划的是多少"是这条记录的全部意义。
+            CREATE TABLE IF NOT EXISTS decision_fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                card_id INTEGER NOT NULL REFERENCES decision_cards(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                filled_on TEXT NOT NULL,
+                price REAL NOT NULL,
+                shares REAL,
+                -- 下单那一刻卡上写着的计划，存快照
+                planned_price REAL,
+                planned_fraction TEXT NOT NULL DEFAULT '',
+                -- 成交当时卡片处在哪一格。判"计划内"要用，而卡片状态之后会变。
+                state_then TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_decision_fills_company
+                ON decision_fills(user_id, company_id);
+
+            CREATE INDEX IF NOT EXISTS idx_decision_cards_state ON decision_cards(user_id, state);
+
+            -- 每一次状态推进都留一行。**退回也留**：把「我从等待买入退回研究中」
+            -- 抹掉，等于把自己承认想错了的那一刻抹掉，而那正是复盘最值钱的部分。
+            CREATE TABLE IF NOT EXISTS decision_transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER NOT NULL REFERENCES decision_cards(id) ON DELETE CASCADE,
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                from_state TEXT NOT NULL,
+                to_state TEXT NOT NULL,
+                -- 谁推的：人工 / 价格触发 / 账本（记了买卖流水）。
+                actor TEXT NOT NULL DEFAULT '人工',
+                reason TEXT NOT NULL DEFAULT '',
+                price_at_move REAL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_decision_transitions_card
+                ON decision_transitions(card_id, id DESC);
+
+            -- ── 助理盯盘（assistant.py）───────────────────────────────────────
+            --
+            -- 每一档价位「现在在不在里面」。**进去那一刻推一次，出来才重新上膛**，
+            -- 而出来要比门槛高出一点（回差，见 assistant.HYSTERESIS）——
+            -- 否则价格在边上来回蹭，一天能推十次，任何一天响十次的提醒人都会关掉。
+            --
+            -- 门槛价也存下来：你改了计划价，那就是新的一档，要能重新提醒。
+            CREATE TABLE IF NOT EXISTS assistant_watch_state (
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                level TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                inside INTEGER NOT NULL DEFAULT 0,
+                changed_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, company_id, level)
+            );
+
+            -- 助理说过的每一句话，以及**有没有送到**。
+            --
+            -- 「以为提醒过了、其实没送到」是这个功能最坏的一种坏法：
+            -- 微信那条通道就会接口报成功、人却什么都没收到。所以送不送得出去
+            -- 必须落在库里，而不是只在日志里闪一下。
+            CREATE TABLE IF NOT EXISTS assistant_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                levels TEXT NOT NULL DEFAULT '[]',
+                price REAL,
+                price_at TEXT,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                delivery TEXT NOT NULL DEFAULT 'pending',
+                delivery_error TEXT NOT NULL DEFAULT '',
+                delivered_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assistant_alerts_recent
+                ON assistant_alerts(user_id, id DESC);
+
+            -- 每一轮盯盘记一笔。**安静必须是「看过了，没事」，不能是「根本没看」**：
+            -- 没有这张表，一个周都没推过消息的助理，你分不清它是真没事还是早就停了。
+            CREATE TABLE IF NOT EXISTS assistant_watch_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                watched INTEGER NOT NULL DEFAULT 0,
+                priced INTEGER NOT NULL DEFAULT 0,
+                alerts INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running',
+                detail TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assistant_watch_runs_recent
+                ON assistant_watch_runs(user_id, id DESC);
+
+            -- ── 产业链环节的同行 ───────────────────────────────────────────
+            --
+            -- 从 earth-atlas 导进来的「A 股代码 → 产业链环节」。
+            --
+            -- **它是公开参考资料，不按用户隔离**：宁德时代在不在「电芯」这个环节，
+            -- 谁看都是同一件事，跟 price_bars、market_universe 同一类。
+            --
+            -- **跟 industry_chain_* 那五张表是两回事，别合并。** 那一套是使用者
+            -- 自己画的底图（节点、连线、核验状态都由他确认），公司位置要 company_id，
+            -- 也就是必须先建档；而这张表的用处恰恰是「同环节那几家我没建档的公司
+            -- 最近涨跌如何」—— 对照组常常正是没建档的那些。
+            CREATE TABLE IF NOT EXISTS chain_segment_members (
+                symbol TEXT NOT NULL,
+                chain TEXT NOT NULL,
+                segment TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                chain_label TEXT NOT NULL DEFAULT '',
+                stage TEXT NOT NULL DEFAULT '',
+                segment_label TEXT NOT NULL DEFAULT '',
+                what TEXT NOT NULL DEFAULT '',
+                -- 每条都带一手出处。**对照组也要能被追问「凭什么说它在这个环节」**。
+                source_url TEXT NOT NULL DEFAULT '',
+                source_title TEXT NOT NULL DEFAULT '',
+                source_quote TEXT NOT NULL DEFAULT '',
+                accessed TEXT NOT NULL DEFAULT '',
+                imported_at TEXT NOT NULL,
+                PRIMARY KEY (symbol, chain, segment)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chain_members_segment
+                ON chain_segment_members(chain, segment);
             """
         )
+        # 决策卡：每块各自的时间戳与出处（见建表注释）。老卡片补空，
+        # 页面会显示成「不知道什么时候定的」——**那比显示成今天定的诚实**。
+        card_columns = {row["name"] for row in conn.execute("PRAGMA table_info(decision_cards)").fetchall()}
+        if card_columns and "block_stamps" not in card_columns:
+            conn.execute("ALTER TABLE decision_cards ADD COLUMN block_stamps TEXT NOT NULL DEFAULT '{}'")
         task_item_columns = {row["name"] for row in conn.execute("PRAGMA table_info(research_task_items)").fetchall()}
         for column in ("brief", "links", "reports", "brief_source"):
             if task_item_columns and column not in task_item_columns:

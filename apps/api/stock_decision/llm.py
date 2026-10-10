@@ -528,7 +528,6 @@ def credits_for(tokens: int) -> int:
 #
 # 这里给的是**典型值**，不是承诺：真实用量取决于喂进去多少字。
 # 页面上要写"约"，并且结算永远按真实 usage。
-# 读交割单不在这张表里——它按图片段数算，见 ledger_scan.estimate_credits。
 TYPICAL_TOKENS = {
     "inbox-classify": 3000,        # 一批公告标题
     "counter-match": 2500,         # 公告 × 认错条件比对
@@ -540,6 +539,10 @@ TYPICAL_TOKENS = {
     # 实测三家公司各跑一轮得到的数，不是拍的。
     "thesis-draft": 65000,
     "method-assessment": 6000,     # 八个方法逐个过
+    # 涨跌归因那段解释。入参是规则层算好的事实表 + 判定表（JSON），
+    # **实测三家：5682 / 10028 / 10066 字**，取上沿 10000 字 ÷ 1.2 ≈ 8300 token，
+    # 加上 900 的输出上限。不是拍的。
+    "rally-narrate": 9200,
     # 一批公告里找承诺。**从 5000 提到 100000 是因为它现在读公告原文了**
     # （见 disclosure.py）：以前每条只喂十四个字的标题，现在要读几十份正文。
     #

@@ -136,11 +136,16 @@ def test_no_sources_means_no_report(monkeypatch):
         deep_report.compose(COMPANY, [], [], FACTS)
 
 
-def test_the_estimate_is_given_before_spending():
+@pytest.mark.parametrize("search_ready", [True, False])
+def test_the_estimate_is_given_before_spending(monkeypatch, search_ready):
     """花钱的事要在点之前知道，不是点完看账单。"""
+    # 测试不依赖开发者的真实搜索密钥；开源环境默认没有配置。
+    monkeypatch.setattr(deep_report.websearch, "available",
+                        lambda: (search_ready, "未配置搜索" if not search_ready else ""))
     plan = deep_report.estimate(COMPANY)
 
-    assert plan["searches"] == len(plan["queries"])
+    assert plan["searches"] == (len(plan["queries"]) if search_ready else 0)
+    assert plan["search_ready"] is search_ready
     assert plan["credits"] > 0
     assert plan["note"]
 

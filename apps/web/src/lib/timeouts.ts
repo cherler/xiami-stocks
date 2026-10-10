@@ -18,7 +18,7 @@ export const SLOW_TIMEOUT_MS = 240_000;
 /** 这些路径下的请求是模型调用，慢是正常的。 */
 export const SLOW_PATHS = [
   "/advocate", "/deep-report", "/reports", "/draft", "/assess", "/ai-pick",
-  "/agent-pool", "/classify", "/promises", "/chain/draft", "/scan",
+  "/agent-pool", "/classify", "/promises", "/chain/draft",
   "/digest", "/ask", "/fundraising",   // 读文档：出结果、追问、抽募投都是模型调用
 ];
 
@@ -41,6 +41,10 @@ const SLOW_POST_ROUTES = [
   "/api/v1/counter-hits/check",
   "/api/v1/value-candidates",
   "/api/v1/companies/{id}/evidence-direction",
+  // 涨跌归因：**GET 是纯算术，POST 才调模型。**
+  // 写进上面那张子串表的话，`GET /rally` 也会拿到 240 秒 ——
+  // 而它本来一百毫秒就回来了，真挂住时要等四分钟才报错。
+  "/api/v1/companies/{id}/rally/narrate",
 ];
 
 /** 去掉 query、把数字 id 段换成 {id}，好跟上面那张表按整条路径比。 */

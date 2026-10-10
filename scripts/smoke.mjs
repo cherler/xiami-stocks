@@ -203,6 +203,40 @@ if (!apiOnly) {
     return "0 次";
   });
 
+  await check("我的判断三页：星号不许漏到界面上，窄屏不许横向溢出", async () => {
+    // **后端的散文用 `**粗体**` 标重点，渲染时要拆掉。**
+    //
+    // 漏一处的表现是界面上明晃晃两个星号 —— 而 tsc 不管（className 与文本
+    // 都只是字符串）、单测不管、构建也不管。2026-09-22 决策卡那一页就漏了
+    // 三处（守卫的「去哪补」、价格带说明、触发提示），是对着截图才看见的。
+    //
+    // 窄屏溢出同理：1440 宽下一切正常，390 宽下判据表整片被推到屏幕外。
+    const bad = [];
+    for (const [name, path] of [["决策闭环", "/stocks/decision-loop"],
+                                ["做 T 回测", "/stocks/swing"],
+                                ["涨跌归因", "/stocks/rally"]]) {
+      await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(1800);
+      const stars = await page.evaluate(() =>
+        (document.body.innerText.match(/\*\*[^*\n]{2,40}\*\*/g) || []).slice(0, 3));
+      if (stars.length) bad.push(`${name} 星号：${stars.join(" / ")}`);
+      await page.setViewportSize({ width: 390, height: 900 });
+      // **改完视口要等重排。** 立刻量的话拿到的是上一个宽度下的 scrollWidth，
+      // 配上新的 clientWidth —— 这个差值既可能虚报一个几百像素的溢出，
+      // 也可能在真溢出时读出 0。实测虚报过一次 708px，而页面其实是好的。
+      await page.waitForFunction(() => document.documentElement.clientWidth <= 400,
+                                 null, { timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(400);
+      const overflow = await page.evaluate(() =>
+        document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (overflow > 2) bad.push(`${name} 390px 下横向溢出 ${overflow}px`);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.waitForTimeout(200);
+    }
+    must(bad.length === 0, bad.join("；"));
+    return "三页 × 星号 + 窄屏，都干净";
+  });
+
   await browser.close();
 }
 

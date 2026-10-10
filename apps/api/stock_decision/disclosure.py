@@ -413,7 +413,7 @@ def excerpt(body: str, limit: int = PROMPT_CHARS) -> str:
 WINDOW_CHARS = 60_000
 
 # 相邻窗口之间的重叠。**一节内容正好跨在窗口边界上时，两边都读不全。**
-# 跟长截图切片那边同一个道理（见 ledger_scan._stride_for）。
+# 视觉接口会把长边压到 1568 像素以内，所以长图必须先在本地切片再送。
 WINDOW_OVERLAP = 2_000
 
 

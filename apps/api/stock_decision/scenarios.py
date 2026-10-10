@@ -188,7 +188,25 @@ def seed(history: dict[str, Any], band: dict[str, Any],
     拿不到历史时返回空——宁可让页面说「先同步财报」，也不要给一组
     看起来很专业、其实是我编的默认值。那种默认值最危险：它会被当成基准。
     """
-    growth_base = history.get("cagr_5y") if history.get("cagr_5y") is not None else history.get("cagr_3y")
+    # ## 增速的初值：用**持续做到过的速度**，不用某一年的峰值
+    #
+    # 第一版是「五年复合（基准）、最差的一年（悲观）、最好的一年（乐观）」。
+    # 三个数全是这家公司真做到过的，所以看起来没毛病 —— 但**把单独一年的增速
+    # 复利五年，得到的不是情景，是假象**。
+    #
+    # 宁德时代实测：最好的一年 +159.06%，复利五年 → 每股 48614 元，
+    # 而它现价 305。页面开场就是 +15858%，使用者原话「我人都麻了」。
+    # 一个自明地荒唐的数字会让整页失去信任，连旁边那个真正有用的反推增速
+    # 也一起被扔掉。
+    #
+    # 现在三个数仍然全部来自它自己的历史，但都是**能持续几年的速度**：
+    #   悲观 = 最差的一年 / 三年 / 五年复合里最低的那个
+    #   基准 = 三年复合（最近这个体制下的速度）
+    #   乐观 = 五年复合与三年复合里高的那个（它真的连着做到过五年）
+    # 并且顺序天然满足 悲观 ≤ 基准 ≤ 乐观，不会出现"乐观比基准还低"。
+    cagr_3y, cagr_5y = history.get("cagr_3y"), history.get("cagr_5y")
+    sustained = [value for value in (cagr_3y, cagr_5y) if value is not None]
+    growth_base = cagr_3y if cagr_3y is not None else cagr_5y
     margin_base = history.get("margin_median")
     if growth_base is None or margin_base is None:
         return []
@@ -200,19 +218,46 @@ def seed(history: dict[str, Any], band: dict[str, Any],
     pe_high = band.get("p75") or pe_base
 
     worst = history.get("growth_worst")
-    best = history.get("growth_best")
+    bear_growth = min([v for v in (worst, *sustained) if v is not None], default=growth_base)
+    bull_growth = max(sustained, default=growth_base)
     return [
-        Scenario("bear",
-                 revenue_growth=worst if worst is not None else growth_base,
+        Scenario("bear", revenue_growth=round(bear_growth, 2),
                  net_margin=history.get("margin_low") or margin_base,
                  exit_pe=round(float(pe_low), 1)),
-        Scenario("base", revenue_growth=growth_base, net_margin=margin_base,
+        Scenario("base", revenue_growth=round(growth_base, 2), net_margin=margin_base,
                  exit_pe=round(float(pe_base), 1)),
-        Scenario("bull",
-                 revenue_growth=best if best is not None else growth_base,
+        Scenario("bull", revenue_growth=round(bull_growth, 2),
                  net_margin=history.get("margin_high") or margin_base,
                  exit_pe=round(float(pe_high), 1)),
     ]
+
+
+def seed_sources(history: dict[str, Any]) -> dict[str, str]:
+    """每个初值是从哪个数来的。**摆在输入框旁边，不然它就是个黑箱。**
+
+    使用者看到「基准 8.84%」时，必须能立刻知道这 8.84 不是我编的，
+    是他这家公司最近三年的复合增速。
+    """
+    cagr_3y, cagr_5y = history.get("cagr_3y"), history.get("cagr_5y")
+    worst = history.get("growth_worst")
+    sustained = [v for v in (cagr_3y, cagr_5y) if v is not None]
+    picks = []
+    if worst is not None:
+        picks.append(f"最差的一年 {worst:g}%")
+    if cagr_3y is not None:
+        picks.append(f"三年复合 {cagr_3y:g}%")
+    if cagr_5y is not None:
+        picks.append(f"五年复合 {cagr_5y:g}%")
+    return {
+        "bear": "取" + "、".join(picks) + " 里最低的那个" if picks else "",
+        "base": (f"三年复合增速 {cagr_3y:g}%（最近这个体制下的速度）"
+                 if cagr_3y is not None else
+                 (f"五年复合增速 {cagr_5y:g}%" if cagr_5y is not None else "")),
+        "bull": (f"五年与三年复合里高的那个 {max(sustained):g}%——它真的连着做到过"
+                 if sustained else ""),
+        "note": "**三个数都是它自己做到过的持续速度，不是某一年的峰值。**"
+                "把单独一年的增速复利五年，得到的不是情景，是假象。",
+    }
 
 
 def value_of(scenario: Scenario, base_revenue: float, shares: float,

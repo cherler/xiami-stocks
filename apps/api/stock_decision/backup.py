@@ -82,6 +82,13 @@ AUTHORED_TABLES = (
     "inbox_corrections",         # 你纠正过的分级——教过一次的东西
     "news_feeds",                # 自己加的订阅源
     "user_settings",             # 偏好
+    # 决策闭环。**卡片上的价格带与仓位计划全是手写的**，而且状态推进日志
+    # 是"我当时怎么想的"唯一的记录——重新同步一万次也拿不回来。
+    "decision_cards",
+    "decision_transitions",
+    # 成交登记。**重新同步一万次也拿不回来**：它记的是你真实的成交价和日期，
+    # 而且是「计划内 / 计划外」唯一的原料——丢了它，整段纪律史就没了。
+    "decision_fills",
 )
 
 # **明确不导的用户表，各写一条理由。**
@@ -95,12 +102,16 @@ NOT_EXPORTED = {
     "screen_runs": "选股的运行流水，不是你写的东西",
     "candidate_review_runs": "候选复核的运行流水",
     "candidate_review_targets": "候选复核的目标清单，跟着上面那条走",
+    "assistant_watch_state": "助理盯盘的「在不在区间里」，下一轮盯盘就重新算出来",
+    "assistant_alerts": "助理发过的提醒流水，里面的数都来自决策卡和行情，不是你写的东西",
+    "assistant_watch_runs": "助理每一轮盯盘的运行记录",
 }
 
 # 自己带 user_id 的表 vs 挂在 company_id 上的子表。
 # 判法跟 repository 里的 _sw / _swc 是同一套。
 _SCOPED_BY_USER = frozenset({
     "companies", "portfolios", "valuations", "management_promises", "counter_hits",
+    "decision_cards",
     "research_tasks", "method_assessments", "screen_strategies", "rule_terms",
     "inbox_corrections", "news_feeds", "user_settings", "documents",
     "fundraising_projects",
@@ -110,6 +121,7 @@ _SCOPED_BY_USER = frozenset({
 _SCOPED_BY_COMPANY = frozenset({
     "theses", "evidences", "research_events", "trades",
     "thesis_reviews", "supply_chain_links", "research_reports",
+    "decision_transitions", "decision_fills",
 })
 
 # 可以重新同步回来的来源数据；只统计条目数，不进入 JSON 导出。
@@ -124,6 +136,8 @@ SOURCE_TABLES = (
     # 而它比其他几张都大（一份正文几千字），塞进 JSON 导出只会让备份变笨重。
     "announcement_texts",
     "provider_syncs",
+    # 产业链环节的同行：从 earth-atlas 重导一次就有，不是手写的东西。
+    "chain_segment_members",
 )
 
 

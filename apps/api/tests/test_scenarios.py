@@ -127,8 +127,11 @@ def test_seed_uses_the_company_own_pe_percentiles():
     bear, base, bull = S.seed(history, band)
 
     assert (bear.exit_pe, base.exit_pe, bull.exit_pe) == (21.8, 29.5, 38.9)
-    # 三个情景的增速与净利率也来自它自己的历史，不是拍出来的乘数
-    assert (bear.revenue_growth, base.revenue_growth, bull.revenue_growth) == (-1.2, 12.0, 17.0)
+    # 三个情景的增速与净利率也来自它自己的历史，不是拍出来的乘数。
+    # **增速取的是「持续做到过的速度」**：基准 = 三年复合 10.0，
+    # 乐观 = 三年与五年里高的那个 12.0（不是最好的那一年 17.0）。
+    # 理由见 seed() 里那段说明。
+    assert (bear.revenue_growth, base.revenue_growth, bull.revenue_growth) == (-1.2, 10.0, 12.0)
     assert (bear.net_margin, base.net_margin, bull.net_margin) == (47.0, 48.0, 50.0)
 
 
@@ -244,3 +247,67 @@ def test_the_window_size_is_reported_separately_from_the_full_series():
     assert history["covered"] == 20
     assert history["window_covered"] == S.RECENT_YEARS + 1
     assert history["window_covered"] < history["covered"]
+
+
+# ------------------------------------------------------------------ 初值不许长成假象
+
+
+def test_初值不拿某一年的峰值去复利():
+    """**把单独一年的增速复利五年，得到的不是情景，是假象。**
+
+    这条是拿宁德时代 2026-09-22 的真实数据写的。当时的初值是
+    「五年复合（基准）、最差的一年（悲观）、最好的一年（乐观）」，
+    于是乐观 = 最好的一年 +159.06% 复利五年 → **每股 48614 元，而它现价 305**。
+    页面开场就是 +15858%，使用者原话「我人都麻了」。
+
+    一个自明地荒唐的数字会让整页失去信任，连旁边那个真正有用的反推增速
+    也一起被扔掉。
+    """
+    catl = {"cagr_3y": 8.84, "cagr_5y": 53.13, "margin_median": 11.66,
+            "margin_low": 9.35, "margin_high": 17.04,
+            "growth_worst": -9.7, "growth_best": 159.06}
+    bear, base, bull = S.seed(catl, {"p25": 21.0, "p50": 24.8, "p75": 42.3})
+
+    assert base.revenue_growth == 8.84, "基准要用三年复合（最近这个体制下的速度）"
+    assert bull.revenue_growth == 53.13, "乐观要用连着做到过五年的速度，不是某一年的峰值"
+    assert bull.revenue_growth != 159.06, "最好的一年复利五年是假象，不是乐观情景"
+
+    base_revenue, shares = 423701834000.0, 4551419768.664564
+    值 = {row.key: S.value_of(row, base_revenue, shares, 5, 10.0)["per_share"]
+          for row in (bear, base, bull)}
+    # 现价 304.63：基准落在同一个量级上，这份估值才有人肯看
+    assert 150 < 值["base"] < 600, f"基准每股 {值['base']}，跟现价不在一个量级上"
+    assert 值["bull"] < 值["base"] * 30, f"乐观每股 {值['bull']}，又长成假象了"
+
+
+def test_三个初值天然有序():
+    """悲观 ≤ 基准 ≤ 乐观。**不能出现「乐观比基准还低」**——
+
+    三年复合快过五年复合的公司（刚加速的那种）最容易撞上这一条。
+    """
+    加速中 = {"cagr_3y": 30.0, "cagr_5y": 8.0, "margin_median": 10.0,
+              "margin_low": 8.0, "margin_high": 14.0,
+              "growth_worst": -5.0, "growth_best": 60.0}
+    bear, base, bull = S.seed(加速中, {"p25": 15.0, "p50": 20.0, "p75": 28.0})
+    assert bear.revenue_growth <= base.revenue_growth <= bull.revenue_growth, \
+        (bear.revenue_growth, base.revenue_growth, bull.revenue_growth)
+    assert base.revenue_growth == 30.0 and bull.revenue_growth == 30.0
+
+
+def test_每个初值都说得出是从哪来的():
+    """使用者看到「基准 8.84%」时，必须能立刻知道它不是编的。"""
+    catl = {"cagr_3y": 8.84, "cagr_5y": 53.13, "margin_median": 11.66,
+            "margin_low": 9.35, "margin_high": 17.04,
+            "growth_worst": -9.7, "growth_best": 159.06}
+    sources = S.seed_sources(catl)
+    assert "8.84" in sources["base"] and "三年" in sources["base"]
+    assert "53.13" in sources["bull"]
+    assert "-9.7" in sources["bear"]
+    assert "假象" in sources["note"]
+
+
+def test_缺三年复合时退回五年():
+    只有五年 = {"cagr_5y": 12.0, "margin_median": 10.0, "margin_low": 8.0,
+                "margin_high": 14.0, "growth_worst": -3.0}
+    bear, base, bull = S.seed(只有五年, {"p25": 15.0, "p50": 20.0, "p75": 28.0})
+    assert base.revenue_growth == 12.0 and bull.revenue_growth == 12.0

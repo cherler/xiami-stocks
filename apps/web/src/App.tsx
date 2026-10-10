@@ -38,6 +38,9 @@ import {
   ShieldCheck,
   X,
   ChevronDown,
+  Workflow,
+  Compass,
+  Repeat2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -58,15 +61,13 @@ import {
   createThesisReview,
   createThesis,
   createTrade,
-  createTradesBatch,
+  setHolding,
+  deletePortfolio,
+  deleteHolding,
   getDecisionBoard,
   getInboxLearning,
   saveRuleTerm,
   deleteRuleTerm,
-  scanLedgerScreenshot,
-  keepScanRows,
-  estimateScanCredits,
-  knownScanRows,
   deleteTrade,
   getBackups,
   getCompanies,
@@ -193,9 +194,6 @@ import type {
   Billing,
   DecisionBoard,
   InboxLearning,
-  ScannedTrade,
-  TradeScanResult,
-  TradeBatchResult,
   ThesisMethod,
   ThesisMethodLibrary,
   BackupManifest,
@@ -245,9 +243,7 @@ import type {
   WatchlistImportResult,
   WatchlistImportRow,
   ThesisStatus,
-  TradeInput,
   TradeRecord,
-  TradeSide,
   QuotePreview,
 } from "./types";
 import { TRADE_SIDE_LABEL } from "./types";
@@ -336,6 +332,12 @@ const CompanyChainPositions = lazy(() => import("./components/CompanyChainPositi
 const SegmentMix = lazy(() => import("./components/SegmentMix").then((m) => ({ default: m.SegmentMix })));
 const GrowthChart = lazy(() => import("./components/GrowthChart").then((m) => ({ default: m.GrowthChart })));
 
+// 我的判断新增的三页。**都走 lazy**：它们各自带着一套判据表与图，
+// 而大多数会话里一页都不会打开。
+const DecisionLoop = lazy(() => import("./components/DecisionLoop").then((m) => ({ default: m.DecisionLoop })));
+const SwingLab = lazy(() => import("./components/SwingLab").then((m) => ({ default: m.SwingLab })));
+const RallyType = lazy(() => import("./components/RallyType").then((m) => ({ default: m.RallyType })));
+
 const HeatmapChart = lazy(async () => {
   const module = await import("./components/HeatmapChart");
   return { default: module.HeatmapChart };
@@ -346,7 +348,7 @@ const ValuationTrend = lazy(async () => {
   return { default: module.ValuationTrend };
 });
 
-type Page = "dashboard" | "review" | "reviews" | "companies" | "company" | "industries" | "screener" | "heatmap" | "tasks" | "methods" | "news" | "chain" | "reports" | "prefs" | "portfolio" | "data" | "backups" | "docs";
+type Page = "dashboard" | "review" | "reviews" | "companies" | "company" | "industries" | "screener" | "heatmap" | "tasks" | "methods" | "news" | "chain" | "reports" | "prefs" | "portfolio" | "data" | "backups" | "docs" | "loop" | "swing" | "rally";
 type Composer = "thesis" | "evidence" | "event" | null;
 
 const statusCopy: Record<ThesisStatus, { label: string; detail: string }> = {
@@ -451,7 +453,17 @@ const navGroups: NavGroup[] = [
     label: "我的判断",
     hint: "写下来、跟踪、复盘",
     items: [
+      // **闭环排第一。** 这一段原来只有账本和复核两项，等于"写完之后"的工具；
+      // 而使用者卡住的地方在"写完到动手"之间 —— 研究完了不知道什么时候买，
+      // 价格到了不知道该不该买，涨了不知道是不是自己错了。
+      // 决策闭环就是那一段，所以它是这一组的第一项。
+      { id: "loop", label: "决策闭环", icon: Workflow, available: true },
       { id: "portfolio", label: "持仓账本", icon: Wallet, available: true },
+      // 涨跌归因跟做 T 回测都是**给判断当参照的算术**：一个回答"它为什么涨"，
+      // 一个回答"波动到底能不能吃到"。放在账本之后、复核之前——
+      // 它们服务的是"我要不要改主意"，而不是"我记了什么"。
+      { id: "rally", label: "涨跌归因", icon: Compass, available: true },
+      { id: "swing", label: "做 T 回测", icon: Repeat2, available: true },
       { id: "reviews", label: "复核工作台", icon: ClipboardCheck, available: true },
     ],
   },
@@ -4116,648 +4128,6 @@ function tradeFigures(trade: TradeRecord): string {
 }
 
 
-/** 交割单截图导入。
- *
- * 手工录入是这个账本最大的摩擦：一年几十笔，加上分红送转，录到一半就不录了——
- * 而不完整的账本比没有账本更糟，因为它看起来是完整的，之后所有复盘都跟着错。
- *
- * 但读出来的东西**一条都不直接入账**。模型认错一个数字，成本价与收益率就永久错，
- * 所以每条都摆出来等你核对；对不上本地档案的、日期读不出来的，都标出来。 */
-/** 「改这条」里各字段的中文名，用于在行上写「XX 原读 YY」。 */
-const SCAN_FIELD_LABEL: Partial<Record<keyof ScannedTrade, string>> = {
-  side: "方向", company_id: "公司", trade_date: "日期",
-  shares: "股数", price: "单价", fee: "费用", cash_amount: "到账金额",
-};
-/** 模型原读值的显示：空值要说「没读到」，不能显示成空白——空白看起来像 0。 */
-function fmtScan(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "没读到";
-  if (typeof value === "string" && value in TRADE_SIDE_LABEL) return TRADE_SIDE_LABEL[value as TradeSide];
-  return String(value);
-}
-
-function LedgerScanner({ portfolios, activeId, companies, onDone, onCancel }: {
-  portfolios: PortfolioSummary[]; activeId: number | null; companies: CompanyRecord[];
-  onDone: () => Promise<void>; onCancel: () => void;
-}) {
-  const [portfolioId, setPortfolioId] = useState<number | null>(activeId ?? portfolios[0]?.id ?? null);
-  // 个股交易记录页上**每一行都没有股票代码**，页头也常常只有名称没有代码
-  // （实测格力那张就是）。指定一次比让模型在十几段图里各猜一次可靠得多。
-  const [pinned, setPinned] = useState<number | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  // **点之前就要知道要花多少。** 那张 1256×20748 的长截图会切成 15 段、
-  // 发 15 次请求，而界面上原来没有任何地方提过。按 token 计费的产品里，
-  // 「点了才知道多少钱」的结果不是省着用，是不敢用。
-  const [quote, setQuote] = useState<{ slices: number | null; credits: number | null; note: string } | null>(null);
-  const [job, setJob] = useState<BackgroundJob | null>(null);
-  const [scan, setScan] = useState<TradeScanResult | null>(null);
-  const [picked, setPicked] = useState<Set<number>>(new Set());
-  // **人工改动单独存，不覆盖模型读到的原值。**
-  //
-  // 这一页的前提是"逐条核对"，而核对之后必然有要改的：模型会把方向读反、
-  // 会漏掉一行的费用、会读不出日期。此前只能勾或不勾——一条数字错了就只能
-  // 整条放弃、回头手工重录一遍，那等于把这个功能最费劲的部分又还给了人。
-  //
-  // 分开存的第二个原因是**留痕**：改过之后仍然看得见模型原来读的是什么。
-  // 合并进去就再也说不清这个数是读出来的还是你改的了。
-  const [edits, setEdits] = useState<Record<number, Partial<ScannedTrade>>>({});
-  const [editing, setEditing] = useState<number | null>(null);
-  // 账本里已经有的那几条。**补录时最容易出的事**：上次只记了勾上的，
-  // 这次回来补剩下的，一个「全选」把已记的又记一遍——而两笔一模一样的交易
-  // 事后分辨不出哪笔是多的，它不报错，只让成本价一直偏。
-  const [known, setKnown] = useState<Set<number>>(new Set());
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<TradeBatchResult | null>(null);
-  // 记完之后跟截图页头的「交易税费」合计对一次——只记了一部分就必然对不上。
-  const [ledgerCheck, setLedgerCheck] = useState<
-    { ok: boolean; booked: number; stated: number; gap: number } | null>(null);
-
-  const running = job !== null && (job.status === "运行中" || job.status === "排队中");
-
-  /** 这一行最终的样子：模型读的 + 你改的。页面显示与入账都走它。 */
-  function effective(row: ScannedTrade, index: number): ScannedTrade {
-    return { ...row, ...(edits[index] ?? {}) };
-  }
-  /** 改过哪几项——用来在行上标「已手改」并写出原值。 */
-  function changedKeys(index: number): (keyof ScannedTrade)[] {
-    return Object.keys(edits[index] ?? {}) as (keyof ScannedTrade)[];
-  }
-  function patch(index: number, key: keyof ScannedTrade, value: unknown) {
-    setEdits((prev) => {
-      const row = scan?.trades[index];
-      const next = { ...(prev[index] ?? {}) } as Record<string, unknown>;
-      // 改回原值就把这条撤销，别留一个"改过但没变"的假痕迹。
-      if (row && value === (row as unknown as Record<string, unknown>)[key]) delete next[key];
-      else next[key] = value;
-      const merged = { ...prev, [index]: next as Partial<ScannedTrade> };
-      if (Object.keys(next).length === 0) delete merged[index];
-      return merged;
-    });
-  }
-  /** 输入框里的数字：空串是「没有这个值」，不是 0。 */
-  function patchNumber(index: number, key: keyof ScannedTrade, raw: string) {
-    const text = raw.trim();
-    if (text === "") return patch(index, key, null);
-    const value = Number(text.replace(/,/g, ""));
-    if (Number.isFinite(value)) patch(index, key, Math.abs(value));
-  }
-  /** 能不能记进账本。**用改完之后的值判断**——改好了就该能勾上。 */
-  function usableAt(row: ScannedTrade, index: number): boolean {
-    const t = effective(row, index);
-    if (t.company_id === null || t.trade_date === null) return false;
-    if (t.side === "dividend") return t.cash_amount !== null;
-    if (t.side === "bonus") return !!t.shares;
-    return !!t.shares && t.price !== null;
-  }
-
-  function adopt(next: BackgroundJob | null) {
-    setJob(next);
-    if (next?.status === "已完成" && next.result) {
-      const result = next.result as unknown as TradeScanResult;
-      setScan(result);
-      setEdits({}); setEditing(null);
-      // **默认全勾上能记的，让人去取消，而不是让人去补勾。**
-      //
-      // 原来默认只勾「读清楚了」的那些，理由听着稳妥：拿不准的要你自己看过再勾。
-      // 实际后果是一次静默的错账——实测格力那次记了 32 / 46 笔，漏掉的 14 笔
-      // 全是标着「待确认」、没被默认勾上的行，于是持仓 4700 股（实际 3300）、
-      // 成本 43.24（实际 41.74），而账本上没有任何地方看得出它是不全的。
-      //
-      // 两种错的代价不对称：
-      //   · 漏记一笔 → 成本价永久偏，且不报错、事后查不出来
-      //   · 多记一笔 → 摆在列表里看得见，而且现在删得掉（见「删除这笔」）
-      // 所以默认往"全记"那边倒，把「待确认」的标记留在行上提醒你逐条核。
-      setPicked(new Set(result.trades
-        .map((t, i) => [t, i] as const)
-        .filter(([t, i]) => usableAt(t, i))
-        .map(([, i]) => i)));
-    }
-  }
-
-  useEffect(() => {
-    if (!scan || portfolioId === null) { setKnown(new Set()); return; }
-    let live = true;
-    knownScanRows(portfolioId, scan.trades.map((t, i) => effective(t, i)))
-      .then((res) => {
-        if (!live) return;
-        const hit = new Set(res.known);
-        setKnown(hit);
-        // 已经记过的默认取消勾选——这是这一步唯一会造成不可逆错误的地方。
-        if (hit.size) setPicked((prev) => new Set([...prev].filter((i) => !hit.has(i))));
-      })
-      .catch(() => undefined);
-    return () => { live = false; };
-  }, [scan, portfolioId]);
-
-  // 进来先看有没有还在跑（或刚跑完）的任务：读图在服务端跑，
-  // 切页面、刷新、锁屏都不该让它白跑，回来要能接上。
-  useEffect(() => { void getJob("ledger_scan", 0).then(adopt).catch(() => undefined); }, []);
-  useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => {
-      void getJob("ledger_scan", 0).then(adopt).catch(() => undefined);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [running]);
-
-  async function startScan() {
-    if (!file) { setError("先选一张交割单截图。"); return; }
-    setBusy("scan"); setError(""); setResult(null); setScan(null); setPicked(new Set());
-    try { adopt(await scanLedgerScreenshot(file, "", pinned)); }
-    catch (caught) { setError(errorMessage(caught)); }
-    finally { setBusy(""); }
-  }
-
-  async function confirm() {
-    if (portfolioId === null || !scan) return;
-    const trades: TradeInput[] = [...picked].sort((a, b) => a - b).map((index) => {
-      // **入账用改后的值。** 用原值的话，你在页面上改了半天，记进去的还是错的。
-      const t = effective(scan.trades[index], index);
-      // **按方向只发该发的字段。** 分红行带着一个 shares: 0 发过去，
-      // 会被 gt=0 挡回来报「股数必须大于 0」—— 而券商的分红行数量栏印的就是 0。
-      const dividend = t.side === "dividend";
-      const bonus = t.side === "bonus";
-      return {
-        company_id: t.company_id as number,
-        side: t.side,
-        trade_date: t.trade_date as string,
-        shares: dividend ? null : t.shares,
-        price: dividend || bonus ? null : t.price,
-        fee: t.fee ?? 0,
-        cash_amount: dividend ? t.cash_amount : null,
-        rationale: "交割单导入",
-      };
-    });
-    if (trades.length === 0) { setError("一条都没勾。"); return; }
-    setBusy("save"); setError("");
-    try {
-      const outcome = await createTradesBatch(portfolioId, trades);
-      setResult(outcome);
-      // **记完立刻对一次账。**
-      // 截图页头那个「交易税费」合计是这张图上唯一的校验和；
-      // 只记了一部分的话，已记入的费用加起来必然对不上它。
-      // 实测那次就是记了 32/46 笔——而账本上没有任何地方看得出它是不全的，
-      // 是用户凭记忆发现成本价不对才查出来的。一个不完整的账本比没有账本更危险：
-      // 它看起来是完整的，而下游（收益率、权重、归因）全部继承那个错。
-      const stated = scan.reconcile?.stated ?? null;
-      if (stated !== null) {
-        const booked = outcome.created.reduce((sum, t) => sum + (t.fee ?? 0), 0);
-        const gap = Math.round((booked - stated) * 100) / 100;
-        setLedgerCheck(Math.abs(gap) < 0.05
-          ? { ok: true, booked, stated, gap }
-          : { ok: false, booked, stated, gap });
-      }
-      // **记进去的那些要从待确认列表里消失。**
-      // 不消失的话，下次进来同一批流水原样还在，点两次就记两遍——
-      // 而账本里两笔一模一样的交易，事后没有任何办法分辨哪笔是多的。
-      const done = new Set(outcome.created.map((t) => `${t.trade_date}|${t.side}|${t.shares}|${t.price}|${t.cash_amount}`));
-      const rest = scan.trades
-        .map((raw, i) => effective(raw, i))
-        .filter((t) => !done.has(`${t.trade_date}|${t.side}|${t.shares}|${t.price}|${t.cash_amount}`));
-      await keepScanRows(rest).catch(() => undefined);
-      setScan(rest.length ? { ...scan, trades: rest } : null);
-      setEdits({}); setPicked(new Set()); setEditing(null);
-      await onDone();
-    } catch (caught) { setError(errorMessage(caught)); }
-    finally { setBusy(""); }
-  }
-
-  return <div className="inline-form">
-    <div className="form-grid compact-grid">
-      <label>记入哪个组合<select value={portfolioId ?? ""} onChange={(e) => setPortfolioId(e.target.value ? Number(e.target.value) : null)}>
-        {portfolios.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
-      </select></label>
-      <label>这张图是哪只票（可选）<select value={pinned ?? ""} disabled={busy !== "" || running}
-        onChange={(e) => setPinned(e.target.value ? Number(e.target.value) : null)}>
-        <option value="">让模型自己认</option>
-        {companies.map((item) => <option value={item.id} key={item.id}>{item.name} {item.symbol}</option>)}
-      </select></label>
-      <label>交割单截图<input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy !== "" || running}
-        onChange={(e) => {
-          const picked = e.target.files?.[0] ?? null;
-          setFile(picked); setError(""); setQuote(null);
-          // 估价只做本地切片，不调模型、不花钱。
-          if (picked) void estimateScanCredits(picked).then(setQuote).catch(() => setQuote(null));
-        }} /></label>
-    </div>
-    {/* 选中文件不等于开始读——读一次要花积分、要跑一两分钟，什么时候开始该由你说了算。 */}
-    <div className="form-actions">
-      <button className="page-action" type="button" disabled={!file || busy !== "" || running}
-        onClick={() => void startScan()}>
-        {running ? "正在后台读取…" : busy === "scan" ? "正在提交…" : "开始读取"}
-      </button>
-      {file && !running && <span className="form-note">
-        已选：{file.name}（{Math.round(file.size / 1024)} KB）
-        {quote && quote.credits !== null && <>
-          {" · "}<strong>{quote.note}，约 {quote.credits} 分</strong>
-        </>}
-      </span>}
-      <button className="text-button" type="button" onClick={onCancel}>取消</button>
-    </div>
-
-    {running && <p className="restore-message">
-      {job?.label}…　<strong>任务在服务端跑</strong>，你可以切到别的页面、甚至关掉浏览器，回来还在这里。
-    </p>}
-    <JobTrouble job={job} onRetry={() => void startScan()} retrying={busy !== ""} />
-    {error && <p className="form-error">{error}</p>}
-
-    {scan && <>
-      {job?.status === "已完成" && <p className="restore-message">{job.note}</p>}
-      <p className="form-note">{scan.boundary}</p>
-      <p className="form-note"><strong>读错了可以直接改。</strong>
-      每行右边「改这条」可以改任一字段，改过的地方会标出来。</p>
-      {(job?.metered || job?.tokens) ? <p className="billing-note">{jobCostText(job)}</p> : null}
-      {/* **对账是这张图上唯一的校验和。** 逐行费用加起来对不对得上页头写的
-          「交易税费」合计，是唯一一个不靠感觉、能直接算出来的完整性检查——
-          所以它要摆在最上面，而不是混在一串提示里。 */}
-      {scan.reconcile && (scan.reconcile.matched
-        ? <p className="scan-reconcile scan-reconcile--ok">
-            <strong>对上了。</strong>逐行费用合计 {scan.reconcile.counted.toFixed(2)} 元，
-            与截图页头写的「交易税费 {scan.reconcile.stated.toFixed(2)}」一致——
-            说明这张图上的流水读全了，也没有多读。
-          </p>
-        : <p className="scan-reconcile scan-reconcile--off">
-            <strong>对不上。</strong>逐行费用合计 {scan.reconcile.counted.toFixed(2)} 元，
-            页头写的是 {scan.reconcile.stated.toFixed(2)}，差 {scan.reconcile.gap > 0 ? "+" : ""}{scan.reconcile.gap.toFixed(2)}。
-            {scan.reconcile.gap > 0 ? "合计偏多，多半有一笔被读了两次。" : "合计偏少，多半漏了一笔，或某一行的费用没读到。"}
-            先从下面标着「只有一段读到」的几条查起。
-          </p>)}
-      {scan.warnings.length > 0 && <ul className="draft-unknown">{scan.warnings.map((w) => <li key={w}>{w}</li>)}</ul>}
-      {scan.unmatched.length > 0 && <p className="form-error">这些在本地档案里找不到，需要先建档：{scan.unmatched.join("、")}</p>}
-      {scan.trades.length > 0 && <>
-        {/* **默认全勾，让人去取消。** 语义跟原来是反的：
-            原来「没勾的不会进账本」是在提醒你补勾，而人不会补——实测漏了 14 笔。
-            现在提醒的是"你取消掉的那些不会进"，方向对了，代价也对了：
-            多记一笔看得见、删得掉；漏记一笔永久偏，且不报错。 */}
-        {picked.size < scan.trades.length && <p className="scan-left scan-left--pre">
-          <strong>你取消勾选了 {scan.trades.length - picked.size} 条，它们不会进账本。</strong>
-          漏掉的交易会让成本价一直偏，而账本上看不出哪里不对——
-          确定这几条不该记吗？
-        </p>}
-        {picked.size === scan.trades.length && scan.trades.some((t) => t.confidence !== "读到了") && (
-          <p className="scan-left scan-left--pre">
-            <strong>已经全部勾上。</strong>标着「待确认」的那几条请逐条核一眼——
-            读错了可以直接点「改这条」，不用整条放弃。
-          </p>
-        )}
-        <div className="scan-rows">
-          {scan.trades.map((raw, index) => {
-            const t = effective(raw, index);
-            const already = known.has(index);
-            const usable = usableAt(raw, index) && !already;
-            const changed = changedKeys(index);
-            // 匹配说明里的「代码 000651」跟上面那一行的代码是同一个东西，
-            // 重复摆两遍只会挤满一行、让真正要看的备注被挤到看不见。
-            const how = t.company_id === null ? "档案里没有这家公司"
-              : t.matched_by.startsWith("代码") ? "按代码对上档案"
-              : t.matched_by.startsWith("名称") ? "按名称对上档案"
-              : t.matched_by;
-            return <label key={index} className={`scan-row${usable ? "" : " scan-row--blocked"}`}>
-              <input type="checkbox" checked={picked.has(index)} disabled={!usable}
-                onChange={(e) => { const next = new Set(picked); e.target.checked ? next.add(index) : next.delete(index); setPicked(next); }} />
-              {/* **一行分两层。** 第一层是这笔交易本身（哪只票、哪天、多少股多少钱），
-                  第二层是"这条读得准不准"。挤在一层里读起来就是一串连在一起的数字，
-                  而这一页的全部工作恰恰是逐条核对数字。 */}
-              <div className="scan-body">
-                <div className="scan-main">
-                  <span className={`trade-side trade-side--${t.side}`}>{TRADE_SIDE_LABEL[t.side]}</span>
-                  <b>{t.company_name || "（无名称）"}</b>
-                  <span className="scan-symbol">{t.symbol}</span>
-                  <span className="scan-date">{t.trade_date ?? "日期读不出"}</span>
-                  <span className="scan-amount">{t.side === "dividend" ? `到账 ${t.cash_amount ?? "?"} 元` :
-                         t.side === "bonus" ? `+${t.shares ?? "?"} 股` :
-                         `${t.shares ?? "?"} 股 × ${t.price ?? "?"}`}</span>
-                  {/* **费用一直是读到了的，只是从来没显示出来** —— 看不见就以为没识别。
-                      A 股每一笔买卖都有佣金印花税，没读到是要当场发现的事：
-                      漏一笔费用，成本价就一直偏低，而它不会在任何地方报错。 */}
-                  {t.side !== "dividend" && t.side !== "bonus" && <span
-                    className={`scan-fee${t.fee === null ? " scan-fee--miss" : ""}`}>
-                    {t.fee === null ? "费用没读到" : `费 ${t.fee}`}
-                  </span>}
-                </div>
-                <div className="scan-meta">
-                  {/* 「待确认」要看得见，而且要说明为什么 —— 只把它埋在「默认没勾上」里，
-                      人会以为是自己漏点了，然后直接全选。 */}
-                  {t.confidence === "读到了"
-                    ? <span className="scan-flag scan-flag--ok">读到了</span>
-                    : <span className="scan-flag scan-flag--check">待确认</span>}
-                  {/* 长截图是双重覆盖切的，正常每行会被相邻两段各读一次。
-                      只被读到一次 = 有一段漏了它，这一行没有被印证过。 */}
-                  {already && <span className="scan-flag scan-flag--known">账本里已经有了</span>}
-                  {scan.geometry?.sliced && (t.cross_checked
-                    ? <span className="scan-flag scan-flag--ok">两段印证</span>
-                    : <span className="scan-flag scan-flag--check">只有一段读到</span>)}
-                  <span>{how}</span>
-                  {t.trade_date === null && <span>日期读不出来</span>}
-                  {t.note && <span>{t.note}</span>}
-                  {/* **改过要看得见，而且要写出模型原来读的是什么。**
-                      不写的话，过一阵你自己也分不清这个数是读出来的还是你改的。 */}
-                  {changed.length > 0 && <span className="scan-edited">
-                    已手改：{changed.map((key) => `${SCAN_FIELD_LABEL[key] ?? key} 原读 ${fmtScan(raw[key])}`).join("，")}
-                  </span>}
-                  <button className="text-button scan-fix" type="button"
-                    onClick={(event) => { event.preventDefault(); setEditing(editing === index ? null : index); }}>
-                    {editing === index ? "收起" : "改这条"}
-                  </button>
-                </div>
-                {editing === index && <div className="scan-edit" onClick={(event) => event.preventDefault()}>
-                  <label>方向<select value={t.side}
-                    onChange={(e) => patch(index, "side", e.target.value)}>
-                    {(["buy", "sell", "dividend", "bonus", "rights"] as TradeSide[]).map((k) =>
-                      <option value={k} key={k}>{TRADE_SIDE_LABEL[k]}</option>)}
-                  </select></label>
-                  <label>公司<select value={t.company_id ?? ""}
-                    onChange={(e) => patch(index, "company_id", e.target.value ? Number(e.target.value) : null)}>
-                    <option value="">对不上，请指定</option>
-                    {companies.map((c) => <option value={c.id} key={c.id}>{c.name} {c.symbol}</option>)}
-                  </select></label>
-                  <label>日期<input type="date" value={t.trade_date ?? ""}
-                    onChange={(e) => patch(index, "trade_date", e.target.value || null)} /></label>
-                  {t.side === "dividend"
-                    ? <label>到账金额<input inputMode="decimal" value={t.cash_amount ?? ""}
-                        onChange={(e) => patchNumber(index, "cash_amount", e.target.value)} /></label>
-                    : <>
-                      <label>股数<input inputMode="decimal" value={t.shares ?? ""}
-                        onChange={(e) => patchNumber(index, "shares", e.target.value)} /></label>
-                      {t.side !== "bonus" && <label>单价<input inputMode="decimal" value={t.price ?? ""}
-                        onChange={(e) => patchNumber(index, "price", e.target.value)} /></label>}
-                    </>}
-                  <label>费用<input inputMode="decimal" value={t.fee ?? ""}
-                    onChange={(e) => patchNumber(index, "fee", e.target.value)} /></label>
-                  <p className="scan-edit-note">
-                    对着原图核完再改。<strong>改完这一行就能勾上了</strong>——
-                    是否可记入按改后的值判断，不按模型读到的。
-                  </p>
-                </div>}
-              </div>
-            </label>;
-          })}
-        </div>
-        <div className="form-actions">
-          <button className="page-action" type="button" disabled={busy !== "" || picked.size === 0} onClick={() => void confirm()}>
-            {busy === "save" ? "正在记入…" : `确认记入选中的 ${picked.size} 条`}
-          </button>
-          <button className="text-button" type="button"
-            onClick={() => setPicked(new Set(scan.trades
-              .map((t, i) => [t, i] as const).filter(([t, i]) => usableAt(t, i) && !known.has(i)).map(([, i]) => i)))}>
-            全选可记入的
-          </button>
-        </div>
-      </>}
-    </>}
-
-    {result && <div className="draft-report">
-      <p>{result.note}</p>
-      {/* **账本要能怀疑自己。** 这是这一页唯一一个能被算出来的完整性检查。 */}
-      {ledgerCheck && (ledgerCheck.ok
-        ? <p className="scan-reconcile scan-reconcile--ok">
-            <strong>对上了。</strong>记进账本的费用合计 {ledgerCheck.booked.toFixed(2)} 元，
-            与截图页头写的「交易税费 {ledgerCheck.stated.toFixed(2)}」一致——
-            这批流水记全了。
-          </p>
-        : <p className="scan-reconcile scan-reconcile--off">
-            <strong>对不上，账本很可能是不全的。</strong>
-            记进账本的费用合计 {ledgerCheck.booked.toFixed(2)} 元，
-            而截图页头写的是 {ledgerCheck.stated.toFixed(2)}，差 {ledgerCheck.gap > 0 ? "+" : ""}{ledgerCheck.gap.toFixed(2)}。
-            {ledgerCheck.gap < 0
-              ? "偏少，说明还有没记进去的交易——它们会让成本价一直是错的，而账本上看不出哪里不对。"
-              : "偏多，多半有一笔记了两次。"}
-          </p>)}
-      {/* **没记的那些必须说出来，而且要说清后果。**
-          默认只勾「读到了」的行，剩下的「待确认」不点就不会进账本——
-          实测有人因此只记了 32/46 笔，成本价从 41.74 变成 43.24，
-          而账本上没有任何地方看得出它是不全的。
-          一个不完整的账本比没有账本更糟：它看起来是完整的。 */}
-      {scan && scan.trades.length > 0 && <p className="scan-left">
-        <strong>还有 {scan.trades.length} 条没记。</strong>
-        它们还留在上面等你核对。<strong>漏掉的交易会让成本价一直是错的</strong>——
-        少一笔卖出，持仓就偏多；少一笔买入，成本就偏离——而账本上看不出哪里不对。
-      </p>}
-      {result.failed.length > 0 && <ul className="draft-unknown">{result.failed.map((f) => <li key={f.index}>第 {f.index + 1} 条：{f.error}</li>)}</ul>}
-    </div>}
-    {!scan && !running && <p className="form-note">
-      支持 PNG / JPEG / WebP，12 MB 以内。<strong>手机滚动长截图直接传就行</strong>——
-      会在本地按段切开再逐段读，一整年的记录一张图就够，不用自己分批截。
-      要紧的是<strong>原图宽度</strong>（要能看清每一位数字），不是文件大小。**截图不保存**，账号、姓名与总资产不进任何记录。
-    </p>}
-  </div>;
-}
-
-function TradeForm({ portfolios, defaultPortfolioId, companies, fixedCompany, onSaved, onCancel, onAfterDecision }: { portfolios: PortfolioSummary[]; defaultPortfolioId: number | null; companies: CompanyRecord[]; fixedCompany?: CompanyDetail; onSaved: () => Promise<void>; onCancel: () => void; /** 记完一笔买卖之后交出公司 id——上层据此决定要不要就地问一句「这条判断呢」。 */
-  onAfterDecision?: (companyId: number) => void }) {
-  const [portfolioId, setPortfolioId] = useState<number | null>(defaultPortfolioId ?? portfolios[0]?.id ?? null);
-  const [companyId, setCompanyId] = useState<number | null>(fixedCompany?.id ?? null);
-  const [theses, setTheses] = useState<ThesisRecord[]>(fixedCompany?.theses ?? []);
-  const [side, setSide] = useState<TradeSide>("buy");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const portfolio = portfolios.find((item) => item.id === portfolioId);
-  const ratioMode = portfolio?.amount_mode === "ratio";
-  // 分红没有股数与价格，送股没有价格。用同一套输入框会让人填出无意义的 0。
-  const needsShares = !ratioMode && side !== "dividend";
-  const needsPrice = !ratioMode && (side === "buy" || side === "sell" || side === "rights");
-  const needsCash = !ratioMode && side === "dividend";
-  // 分红与送股不是你的决定，理由可以省——后端会替你写「除权除息，非主动操作」。
-  const rationaleRequired = side === "buy" || side === "sell" || side === "rights";
-  useEffect(() => { if (portfolioId === null && portfolios.length > 0) setPortfolioId(portfolios[0].id); }, [portfolios, portfolioId]);
-  useEffect(() => {
-    if (fixedCompany || companyId === null) return;
-    let current = true;
-    getCompany(companyId).then((company) => { if (current) setTheses(company.theses); }).catch(() => { if (current) setTheses([]); });
-    return () => { current = false; };
-  }, [companyId, fixedCompany]);
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (portfolioId === null || companyId === null) { setError("请先选择组合与公司。"); return; }
-    const form = new FormData(event.currentTarget);
-    const thesisId = String(form.get("thesis_id") ?? "");
-    const reviewDue = String(form.get("review_due") ?? "");
-    // 只送这次真正填了的字段。把没填的当 0 送过去，后端就分不清
-    // 「这次分红是 0 元」与「这是一笔买入，没有分红字段」。
-    const num = (key: string) => {
-      const raw = String(form.get(key) ?? "").trim();
-      return raw === "" ? null : Number(raw);
-    };
-    const payload: TradeInput = {
-      company_id: companyId,
-      thesis_id: thesisId ? Number(thesisId) : null,
-      side,
-      trade_date: String(form.get("trade_date") ?? todayIso()),
-      fee: Number(form.get("fee") ?? 0),
-      rationale: String(form.get("rationale") ?? ""),
-      expectation: String(form.get("expectation") ?? ""),
-      review_due: reviewDue || null,
-      ...(ratioMode
-        ? { weight_percent: num("weight_percent"), price: num("price") }
-        : side === "dividend"
-          ? { cash_amount: num("cash_amount") }
-          : side === "bonus"
-            ? { shares: num("shares") }
-            : { shares: num("shares"), price: num("price") }),
-    };
-    setSaving(true); setError("");
-    try {
-      await createTrade(portfolioId, payload);
-      await onSaved();
-      // **刚下完单那一刻，理由最新鲜。**
-      // 纪律只能绑在必然发生的动作上：对散户来说必然发生的只有"看行情"和"下单"，
-      // 而这个产品原来在这两个时刻都不存在——「写下一个判断」是个要你自己
-      // 想起来去点的按钮，于是 12 家档案里只有 3 家写了逻辑。
-      // 买卖是决定，分红送股不是——只在前者之后问。
-      if (companyId !== null && (payload.side === "buy" || payload.side === "sell")) {
-        onAfterDecision?.(companyId);
-      }
-      onCancel();
-    }
-    catch (caught) { setError(errorMessage(caught)); }
-    finally { setSaving(false); }
-  }
-  return <form className="inline-form" onSubmit={submit}>
-    <div className="form-grid compact-grid">
-      <label>组合<select name="portfolio_id" value={portfolioId ?? ""} onChange={(event) => setPortfolioId(event.target.value ? Number(event.target.value) : null)} required>{portfolios.length === 0 && <option value="">暂无组合</option>}{portfolios.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-      <label>公司{fixedCompany ? <input value={`${fixedCompany.name} · ${fixedCompany.symbol}`} readOnly /> : <select name="company_id" value={companyId ?? ""} onChange={(event) => setCompanyId(event.target.value ? Number(event.target.value) : null)} required><option value="">选择已建档公司</option>{companies.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.symbol}</option>)}</select>}</label>
-      <label>类型<select name="side" value={side} onChange={(event) => setSide(event.target.value as TradeSide)}>
-        {(Object.keys(TRADE_SIDE_LABEL) as TradeSide[]).map((key) => <option value={key} key={key}>{TRADE_SIDE_LABEL[key]}</option>)}
-      </select></label>
-      <label>日期<input type="date" name="trade_date" defaultValue={todayIso()} max={todayIso()} required /></label>
-      {ratioMode && <>
-        <label>这次之后的仓位占比<input type="number" name="weight_percent" min="0" max="100" step="0.1" placeholder="15" required /></label>
-        <label>成本价（可选）<input type="number" name="price" min="0.001" step="0.001" placeholder="不记录也可以" /></label>
-      </>}
-      {needsShares && <label>{side === "bonus" ? "增加的股数" : "股数"}<input type="number" name="shares" min="1" step="1" placeholder="100" required /></label>}
-      {needsPrice && <label>{side === "rights" ? "配股价" : "成交价"}<input type="number" name="price" min="0.001" step="0.001" placeholder="每股价格" required /></label>}
-      {needsCash && <label>税后到账金额<input type="number" name="cash_amount" min="0" step="0.01" placeholder="实际到账，不是每股派息" required /></label>}
-      {!ratioMode && <label>费用合计<input type="number" name="fee" min="0" step="0.01" defaultValue="0" /></label>}
-      <label>下次复核<input type="date" name="review_due" min={todayIso()} /></label>
-    </div>
-    <label>关联投资逻辑<select name="thesis_id" defaultValue=""><option value="">暂不关联</option>{theses.map((thesis) => <option value={thesis.id} key={thesis.id}>{thesis.claim.slice(0, 30)}{thesis.claim.length > 30 ? "…" : ""}</option>)}</select></label>
-    <label>{rationaleRequired ? "当时的理由" : "备注（可不填）"}<textarea name="rationale" rows={rationaleRequired ? 3 : 2} required={rationaleRequired} placeholder={rationaleRequired ? "为什么在这个时点买入或卖出？写下当时依据的事实，不要写目标价。" : "分红与送股不是你的决定，理由可以不写。"} /></label>
-    <label>当时的预期与证伪条件<textarea name="expectation" rows={2} placeholder="你预期会发生什么？出现什么事实说明这笔交易的依据不成立？" /></label>
-    {error && <p className="form-error">{error}</p>}
-    <div className="form-actions"><button className="page-action" type="submit" disabled={saving || portfolios.length === 0}>{saving ? "正在记录…" : "记录交易"}</button><button className="text-button" type="button" onClick={onCancel}>取消</button></div>
-    <p className="form-note">
-      {ratioMode
-        ? "这个组合只记仓位占比；成本价只是可选的研究上下文，不落总金额。判断要不要减仓，看的是它占多重。"
-        : "不连券商、不下单。成本按移动加权平均，费用计入成本或冲减盈亏，分红单列一栏。"}
-    </p>
-  </form>;
-}
-
-/**
- * 轻量持仓快照：它回答「我有没有买、占多少、成本大概多少」，不要求用户还原交易流水。
- * 判断复核不依赖它；这只是让复核时多一个可选的个人视角。
- */
-function HoldingSnapshotForm({ portfolios, companies, onSaved, onCancel, onCreateLightPortfolio }: {
-  portfolios: PortfolioSummary[];
-  companies: CompanyRecord[];
-  onSaved: () => Promise<void>;
-  onCancel: () => void;
-  onCreateLightPortfolio: () => Promise<void>;
-}) {
-  const ratioPortfolios = portfolios.filter((item) => item.amount_mode === "ratio");
-  const fullPortfolios = portfolios.filter((item) => item.amount_mode !== "ratio");
-  const [portfolioId, setPortfolioId] = useState<number | null>(ratioPortfolios[0]?.id ?? null);
-  const [companyId, setCompanyId] = useState<number | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  /**
-   * 两种口径，**在记录的这一刻由你选**，而不是被默认成其中一种。
-   *
-   * 原来这张表只有"占仓位百分之几"，成本价还是可选的。结果是：记完之后
-   * 页面上市值、浮动盈亏全是空的——因为没有股数就换算不出金额——
-   * 而"当前持股"那一格显示的是**已清仓**。使用者的原话：
-   * 「我没说已经清仓了，它怎么默认清仓了？」
-   *
-   * 所以把选择摆到前面，并且说清代价：只记仓位 = 不留金额、也算不出盈亏。
-   */
-  const [mode, setMode] = useState<"ratio" | "shares">("ratio");
-
-  useEffect(() => {
-    if (portfolioId === null && ratioPortfolios.length > 0) setPortfolioId(ratioPortfolios[0].id);
-  }, [portfolioId, ratioPortfolios]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (portfolioId === null || companyId === null) { setError("请先选择轻量组合和公司。"); return; }
-    const form = new FormData(event.currentTarget);
-    const rawCost = String(form.get("price") ?? "").trim();
-    const cost = rawCost === "" ? null : Number(rawCost);
-
-    if (mode === "shares") {
-      // 记股数这一路要落进**完整口径**的组合：仓位口径的组合按设计就拒收股数
-      // （它的承诺是"不留金额"）。没有完整组合就先建一个。
-      const shares = Number(form.get("shares") ?? "");
-      if (!Number.isFinite(shares) || shares <= 0) { setError("持仓股数要填一个大于 0 的数字。"); return; }
-      if (cost === null || !Number.isFinite(cost) || cost <= 0) { setError("记股数就要有成本价，否则算不出盈亏。"); return; }
-      setSaving(true); setError("");
-      try {
-        let target = fullPortfolios[0]?.id ?? null;
-        if (target === null) {
-          const created = await createPortfolio({
-            name: "我的持仓", objective: "记股数与成本，可以算市值与盈亏。", amount_mode: "full",
-          });
-          target = created.id;
-        }
-        await createTrade(target, {
-          company_id: companyId, side: "buy", trade_date: todayIso(),
-          shares, price: cost, rationale: "持仓快照（记股数）",
-        });
-        await onSaved();
-        onCancel();
-      } catch (caught) { setError(errorMessage(caught)); } finally { setSaving(false); }
-      return;
-    }
-
-    const weight = Number(form.get("weight_percent") ?? "");
-    if (!Number.isFinite(weight) || weight < 0 || weight > 100) { setError("仓位占比填写 0–100 之间的数字。"); return; }
-    if (cost !== null && (!Number.isFinite(cost) || cost <= 0)) { setError("成本价要大于 0；不想记录成本可以留空。"); return; }
-    setSaving(true); setError("");
-    try {
-      await createTrade(portfolioId, {
-        company_id: companyId,
-        side: "buy",
-        trade_date: todayIso(),
-        weight_percent: weight,
-        price: cost,
-        rationale: "持仓快照（非交易流水）",
-      });
-      await onSaved();
-      onCancel();
-    } catch (caught) { setError(errorMessage(caught)); } finally { setSaving(false); }
-  }
-
-  if (ratioPortfolios.length === 0) {
-    return <div className="holding-snapshot-empty">
-      <div><strong>先建立一个轻量持仓组合</strong><p>它只保存仓位占比和可选成本，不保存完整交易流水。没有持仓记录也不影响判断复核。</p></div>
-      <button className="page-action" type="button" onClick={() => void onCreateLightPortfolio()}>建立轻量组合</button>
-      <button className="text-button" type="button" onClick={onCancel}>稍后再说</button>
-    </div>;
-  }
-
-  return <form className="inline-form holding-snapshot-form" onSubmit={submit}>
-    <div className="holding-snapshot-lead"><span className="eyebrow">可选个人视角</span><strong>记一笔持仓</strong><p>买没买、拿多少、成本多少；不填也能继续使用判断和复核。</p></div>
-    {/* 口径选在前面，并且把代价说清楚——它决定了之后页面上算不算得出盈亏。 */}
-    <div className="chart-range-group" role="group" aria-label="记录口径">
-      <button type="button" className={`chart-range${mode === "shares" ? " chart-range--on" : ""}`}
-        onClick={() => setMode("shares")}>记股数与成本<em>能算市值与盈亏</em></button>
-      <button type="button" className={`chart-range${mode === "ratio" ? " chart-range--on" : ""}`}
-        onClick={() => setMode("ratio")}>只记仓位占比<em>不留金额，也算不出盈亏</em></button>
-    </div>
-    <div className="form-grid compact-grid">
-      {ratioPortfolios.length > 1 && <label>组合<select value={portfolioId ?? ""} onChange={(event) => setPortfolioId(event.target.value ? Number(event.target.value) : null)}>{ratioPortfolios.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}
-      <label>公司<select value={companyId ?? ""} onChange={(event) => setCompanyId(event.target.value ? Number(event.target.value) : null)} required><option value="">选择已建档公司</option>{companies.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.symbol}</option>)}</select></label>
-      {mode === "ratio"
-        ? <label>占仓位<input type="number" name="weight_percent" min="0" max="100" step="0.1" placeholder="例如 15" required /><span className="field-suffix">%</span></label>
-        : <label>持仓股数<input type="number" name="shares" min="1" step="1" placeholder="例如 4700" required /><span className="field-suffix">股</span></label>}
-      <label>{mode === "ratio" ? "成本价（可选）" : "成本价"}<input type="number" name="price" min="0.001" step="0.001"
-        placeholder={mode === "ratio" ? "不记录也可以" : "例如 40.86"} required={mode === "shares"} /></label>
-    </div>
-    {error && <p className="form-error">{error}</p>}
-    <div className="form-actions"><button className="page-action" type="submit" disabled={saving}>{saving ? "正在保存…" : "保存持仓快照"}</button><button className="text-button" type="button" onClick={onCancel}>取消</button></div>
-    <p className="form-note">这不是交易流水，也不会产生买卖建议；再次保存同一家公司时，系统只把最新仓位作为当前视角。</p>
-  </form>;
-}
-
 function PortfolioForm({ onSaved, onCancel }: { onSaved: (portfolioId: number) => Promise<void>; onCancel: () => void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -4873,7 +4243,7 @@ function TradeRow({ trade, onOpenCompany, onRevised }: { trade: TradeRecord; onO
       <button className="text-button" onClick={() => setEditing((value) => !value)}>{editing ? "取消修订" : "补记理由或复核日期"}</button>
       <RevisionHistory entity="trades" entityId={trade.id} count={trade.revision_count} />
       {/* **删除此前是没有的**，而逻辑、报告、产业链、策略都能删。
-          交易恰恰最需要能删：读交割单会把方向读反、会多读一行。删不掉的话，
+          交易恰恰最需要能删：手记会记错组合、也会记重。删不掉的话，
           唯一的补救是记一笔反向交易去抵消——那是往账本里写一笔从未发生过的事。 */}
       <button className="text-button text-button--danger" disabled={removing}
         onClick={() => void remove()}>{removing ? "正在删…" : "删除这笔"}</button>
@@ -4882,6 +4252,184 @@ function TradeRow({ trade, onOpenCompany, onRevised }: { trade: TradeRecord; onO
     {editing && onRevised && <TradeReviseForm trade={trade} onSaved={onRevised} onCancel={() => setEditing(false)} />}
   </article>;
 }
+
+/** 持仓：一只票一行，两个数，只有新增和更新。
+ *
+ * 使用者 2026-09-23 定的模型，原话：
+ *
+ * > 持仓：只记持有股票数，只有一个数，新增和更新。
+ * > 价格也是一个更新（采用成本价，更新）。
+ *
+ * 所以这里**没有买入卖出、没有日期、没有理由**——那些是交易的概念，
+ * 而这一页记的是现状：打开券商 APP，把股数和成本价抄过来就完了。
+ * 之前那套（手工流水 + 交割单读图 + 分红送转）已经删掉：它在跟券商 APP
+ * 抢同一份活，而券商那边永远比这里准、比这里新、还不用你动手。
+ *
+ * **改一只票就存一只票**，不做"全表保存"：一次存全部的话，
+ * 改错一格会把整页退回去，而你根本不知道是哪一格。 */
+function HoldingsEditor({ portfolioId, positions, companies, onChanged, onOpenCompany }: {
+  portfolioId: number;
+  positions: PositionRecord[];
+  companies: CompanyRecord[];
+  onChanged: () => Promise<void> | void;
+  onOpenCompany: (id: number) => void;
+}) {
+  // 每行编辑中的值。**只放"改过的那几行"**——没动过的行直接显示库里的数，
+  // 全量灌进 state 会让别处刷新出的新数据被旧的编辑态盖住。
+  const [draft, setDraft] = useState<Record<number, { shares: string; cost: string }>>({});
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  function valueOf(position: PositionRecord) {
+    return draft[position.company_id] ?? {
+      shares: String(position.shares ?? ""),
+      cost: position.average_cost === null ? "" : String(position.average_cost),
+    };
+  }
+  function edit(companyId: number, patch: Partial<{ shares: string; cost: string }>,
+                position: PositionRecord) {
+    setDraft((previous) => ({
+      ...previous,
+      [companyId]: { ...valueOf(position), ...patch },
+    }));
+  }
+  const dirty = (position: PositionRecord) => {
+    const value = draft[position.company_id];
+    if (!value) return false;
+    return Number(value.shares) !== position.shares
+      || Number(value.cost) !== position.average_cost;
+  };
+
+  async function save(position: PositionRecord) {
+    const value = valueOf(position);
+    const shares = Number(value.shares);
+    const cost = Number(value.cost);
+    // **两个数都要有，而且都要大于 0。** 成本价填 0 的话浮盈会显示成无穷大。
+    if (!Number.isFinite(shares) || shares <= 0) { setError("股数要填一个大于 0 的数。"); return; }
+    if (!Number.isFinite(cost) || cost <= 0) { setError("成本价要填一个大于 0 的数。"); return; }
+    setBusy(position.company_id); setError("");
+    try {
+      await setHolding(portfolioId, position.company_id, shares, cost);
+      setDraft((previous) => {
+        const next = { ...previous };
+        delete next[position.company_id];
+        return next;
+      });
+      await onChanged();
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(null); }
+  }
+
+  async function remove(position: PositionRecord) {
+    // 确认框走纯文本（见 lib/confirm 的 window.confirm 兜底），不要写 **。
+    if (!(await confirmAction({
+      title: `把「${position.company_name}」从持仓里去掉？`,
+      detail: "这一行连同它的历史一起删掉，回不来了。",
+      confirmText: "删掉这一只", danger: true,
+    }))) return;
+    setBusy(position.company_id); setError("");
+    try {
+      const result = await deleteHolding(portfolioId, position.company_id);
+      // 删 0 条和删 1 条在界面上长得一样，所以 0 要明说。
+      if (result.deleted === 0) setError("一条都没删掉——这一只在这个组合里本来就没有记录。");
+      await onChanged();
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(null); }
+  }
+
+  const held = new Set(positions.map((item) => item.company_id));
+
+  return <div className="holdings-editor">
+    <table className="holdings-table">
+      <thead><tr>
+        <th>公司</th><th>股数</th><th>成本价</th><th>现价</th><th>市值</th><th>盈亏</th><th />
+      </tr></thead>
+      <tbody>
+        {positions.map((position) => {
+          const value = valueOf(position);
+          const changed = dirty(position);
+          return <tr key={position.company_id}>
+            <td>
+              <button className="text-button" type="button"
+                onClick={() => onOpenCompany(position.company_id)}>{position.company_name}</button>
+              <em>{position.symbol}</em>
+            </td>
+            <td><input type="number" min="0" step="1" value={value.shares}
+              onChange={(event) => edit(position.company_id, { shares: event.target.value }, position)} /></td>
+            <td><input type="number" min="0" step="0.001" value={value.cost}
+              onChange={(event) => edit(position.company_id, { cost: event.target.value }, position)} /></td>
+            <td className="holdings-num">{position.latest_price === null ? "—" : formatMoney(position.latest_price)}</td>
+            <td className="holdings-num">{position.market_value === null ? "—" : formatMoney(position.market_value)}</td>
+            <td className={`holdings-num ${pnlClass(position.unrealized_pnl)}`}>
+              {signedPercentText(position.unrealized_percent)}
+            </td>
+            <td className="holdings-actions">
+              {/* 只有真改过才亮「存」——一个永远可点的保存键会让人不确定存没存过。 */}
+              {changed && <button className="page-action" type="button"
+                disabled={busy === position.company_id}
+                onClick={() => void save(position)}>
+                {busy === position.company_id ? "…" : "存"}</button>}
+              <button className="text-button text-button--danger" type="button"
+                disabled={busy === position.company_id}
+                onClick={() => void remove(position)}>删</button>
+            </td>
+          </tr>;
+        })}
+      </tbody>
+    </table>
+    {error && <p className="form-error">{error}</p>}
+    {adding
+      ? <HoldingAddRow portfolioId={portfolioId}
+          companies={companies.filter((item) => !held.has(item.id))}
+          onDone={async () => { setAdding(false); await onChanged(); }}
+          onCancel={() => setAdding(false)} />
+      : <button className="text-button" type="button" onClick={() => setAdding(true)}>＋ 添加一只</button>}
+    <p className="holdings-note">
+      打开券商 APP，把股数和成本价抄过来就行。<strong>改完点「存」，它就是现在的持仓</strong>——
+      不用记买入卖出，也不用补历史。精确到分的成本与收益券商那边永远比这里准。
+    </p>
+  </div>;
+}
+
+/** 添加一只。跟编辑行分开写：新增要选公司，编辑不用。 */
+function HoldingAddRow({ portfolioId, companies, onDone, onCancel }: {
+  portfolioId: number; companies: CompanyRecord[];
+  onDone: () => Promise<void>; onCancel: () => void;
+}) {
+  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [shares, setShares] = useState("");
+  const [cost, setCost] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (companyId === null) { setError("先选一家公司。"); return; }
+    const n = Number(shares), c = Number(cost);
+    if (!Number.isFinite(n) || n <= 0) { setError("股数要填一个大于 0 的数。"); return; }
+    if (!Number.isFinite(c) || c <= 0) { setError("成本价要填一个大于 0 的数。"); return; }
+    setBusy(true); setError("");
+    try {
+      await setHolding(portfolioId, companyId, n, c);
+      await onDone();
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  return <form className="holdings-add" onSubmit={submit}>
+    <select value={companyId ?? ""} required
+      onChange={(event) => setCompanyId(event.target.value ? Number(event.target.value) : null)}>
+      <option value="">选一家已建档的公司</option>
+      {companies.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.symbol}</option>)}
+    </select>
+    <input type="number" min="0" step="1" placeholder="股数" value={shares}
+      onChange={(event) => setShares(event.target.value)} required />
+    <input type="number" min="0" step="0.001" placeholder="成本价" value={cost}
+      onChange={(event) => setCost(event.target.value)} required />
+    <button className="page-action" type="submit" disabled={busy}>{busy ? "…" : "添加"}</button>
+    <button className="text-button" type="button" onClick={onCancel}>取消</button>
+    {error && <p className="form-error">{error}</p>}
+  </form>;
+}
+
 
 function PositionTable({ positions, onOpenCompany, ratioMode = false }: { positions: PositionRecord[]; onOpenCompany: (id: number) => void; ratioMode?: boolean }) {
   if (ratioMode) {
@@ -4913,14 +4461,14 @@ function PositionTable({ positions, onOpenCompany, ratioMode = false }: { positi
   </div>;
 }
 
-function PortfolioPage({ onOpenCompany, onLedgerChanged, onAfterDecision }: { onOpenCompany: (id: number) => void; onLedgerChanged: () => Promise<void>; onAfterDecision?: (companyId: number) => void }) {
+function PortfolioPage({ onOpenCompany, onLedgerChanged }: { onOpenCompany: (id: number) => void; onLedgerChanged: () => Promise<void> }) {
   const [portfolios, setPortfolios] = useState<PortfolioSummary[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [detail, setDetail] = useState<PortfolioDetail | null>(null);
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [composer, setComposer] = useState<"snapshot" | "trade" | "portfolio" | "scan" | null>(null);
+  const [composer, setComposer] = useState<"portfolio" | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -4945,11 +4493,25 @@ function PortfolioPage({ onOpenCompany, onLedgerChanged, onAfterDecision }: { on
     return () => { current = false; };
   }, [activeId]);
 
-  async function createLightPortfolio() {
+  async function removePortfolio() {
+    const target = portfolios.find((item) => item.id === activeId);
+    if (!target) return;
+    // 确认框只认纯文本（见 lib/confirm 的 window.confirm 兜底），不要写 **。
+    if (!(await confirmAction({
+      title: `删掉组合「${target.name}」？`,
+      detail: target.position_count > 0
+        ? `里面还有 ${target.position_count} 只持仓，会一起删掉，回不来了。`
+        : "这个组合是空的，删掉不影响任何持仓。",
+      confirmText: "删掉这个组合", danger: true,
+    }))) return;
     try {
-      const created = await createPortfolio({ name: "研究持仓", objective: "只记录仓位和可选成本，不记录交易流水。", amount_mode: "ratio" });
-      await reload(created.id);
-      setComposer("snapshot");
+      const result = await deletePortfolio(target.id);
+      // 带走了多少只一定要说：删空组合和删掉装满记录的组合，界面上长得一样。
+      setError(result.holdings > 0
+        ? `已删掉「${result.name}」，连同里面 ${result.holdings} 只持仓。`
+        : `已删掉空组合「${result.name}」。`);
+      const rest = portfolios.filter((item) => item.id !== target.id);
+      await reload(rest[0]?.id);
     } catch (caught) { setError(errorMessage(caught)); }
   }
 
@@ -5010,33 +4572,35 @@ function PortfolioPage({ onOpenCompany, onLedgerChanged, onAfterDecision }: { on
         {/* **这句说明只在空账本时出现。** 它回答的是"这一页是干什么的"——
             一旦你已经记了交易，它每次都占着 40 像素却再也不会被读一遍。 */}
         {(!detail || detail.trade_count === 0) &&
-          <p>持仓是可选的个人视角：只记占仓位多少和可选成本；不填也能完整使用判断与复核。</p>}
+          <p>一只票一行，两个数：股数和成本价。打开券商 APP 抄过来就行，不用记买卖、不用补历史。</p>}
       </div>
       <div className="intro-actions">
-        <button className="page-action" onClick={() => setComposer(composer === "snapshot" ? null : "snapshot")}><Plus size={14} />添加持仓</button>
-        <details className="portfolio-advanced-menu">
-          <summary>高级记录</summary>
-          <div className="portfolio-advanced-actions">
-            <button className="text-button" onClick={() => setComposer(composer === "trade" ? null : "trade")}>完整交易流水</button>
-            <button className="text-button" onClick={() => setComposer(composer === "scan" ? null : "scan")}>导入交割单</button>
-            <button className="text-button" onClick={() => setComposer(composer === "portfolio" ? null : "portfolio")}>新建组合</button>
-          </div>
-        </details>
+        {/* **「完整交易流水」那个入口删掉了。**
+            持仓改成「只记股数和成本价」之后，手工记一笔 buy 不再影响持仓，
+            留着它等于摆一个点了没有任何效果的按钮。
+            它原来唯一的用处是喂「计划内 / 计划外」那个指标，
+            而那件事挪到了决策卡上的「登记成交」——在你真动手的那一刻记一次，
+            不是事后补账。 */}
+        <button className="text-button" onClick={() => setComposer(composer === "portfolio" ? null : "portfolio")}>新建组合</button>
+        {/* **组合此前根本删不掉**（接口只有 GET 和 PATCH），
+            于是一个手滑建出来的空组合会永远杵在页签上。 */}
+        {activeId !== null && portfolios.length > 1 && <button className="text-button text-button--danger"
+          onClick={() => void removePortfolio()}>删掉这个组合</button>}
       </div>
     </section>
     {error && <p className="form-error">{error}</p>}
-    {composer === "snapshot" && <section className="panel"><HoldingSnapshotForm portfolios={portfolios} companies={companies} onSaved={() => reload()} onCancel={() => setComposer(null)} onCreateLightPortfolio={createLightPortfolio} /></section>}
     {composer === "portfolio" && <section className="panel"><PortfolioForm onSaved={(portfolioId) => reload(portfolioId)} onCancel={() => setComposer(null)} /></section>}
-    {composer === "scan" && <section className="panel"><LedgerScanner portfolios={portfolios} activeId={activeId} companies={companies} onDone={() => reload()} onCancel={() => setComposer(null)} /></section>}
-    {composer === "trade" && <section className="panel"><TradeForm portfolios={portfolios} defaultPortfolioId={activeId} companies={companies} onSaved={() => reload()} onCancel={() => setComposer(null)} onAfterDecision={onAfterDecision} /></section>}
     {loading && <div className="empty-state page-loading">正在读取持仓账本…</div>}
-    {!loading && portfolios.length > 1 && <div className="portfolio-tabs" role="tablist" aria-label="选择组合">{portfolios.map((item) => <button key={item.id} role="tab" aria-selected={item.id === activeId} className={`portfolio-tab${item.id === activeId ? " portfolio-tab--on" : ""}`} onClick={() => setActiveId(item.id)}>{item.name}<em>{item.position_count} 只 · {item.trade_count} 笔</em></button>)}</div>}
+    {!loading && portfolios.length > 1 && <div className="portfolio-tabs" role="tablist" aria-label="选择组合">{portfolios.map((item) => <button key={item.id} role="tab" aria-selected={item.id === activeId} className={`portfolio-tab${item.id === activeId ? " portfolio-tab--on" : ""}`} onClick={() => setActiveId(item.id)}>{item.name}{/* **不再显示"N 笔"**：持仓现在是"现在持有什么"，没有流水这个概念了。
+            改一次持仓底下确实会多一行历史，但那是实现细节，不该摆到页签上
+            让人以为自己交易了 N 次。 */}
+          <em>{item.position_count} 只</em></button>)}</div>}
     {!loading && detail && <>
       {detail.objective && <p className="portfolio-objective">{detail.objective}</p>}
       <section className="metric-strip portfolio-metrics" aria-label="组合概要">{tiles.map((tile) => <article className="metric metric--plain" key={tile.label}><span>{tile.label}</span><strong className={tile.tone}>{tile.value}</strong><small>{tile.detail}</small></article>)}</section>
       {/* 降级的那几项。**为零也是事实，只是不值一个格子。**
           行尾接动作入口：这一条恰恰出现在账本还很薄的时候，
-          而那时最该被看见的就是"再记一笔 / 读一张交割单"——
+          而那时最该被看见的就是"填一只持仓"——
           原来这两个入口只在右上角最小的一行字里。 */}
       {/* **这里原来还挂着第二个「＋ 添加持仓」。**
           当时的理由写在上面那段注释里：「这两个入口只在右上角最小的一行字里」——
@@ -5047,8 +4611,16 @@ function PortfolioPage({ onOpenCompany, onLedgerChanged, onAfterDecision }: { on
         {quiet.map((item) => <span key={item.label}><b>{item.label}</b>{item.quiet}</span>)}
       </p>}
       <section className="panel">
-        <div className="panel-heading"><div><span className="eyebrow">{ratioMode ? "可选个人视角" : "持仓结构"}</span><PanelTitle hint={ratioMode ? "只记录你是否持有、仓位占比和可选成本；不填也不影响判断复核。" : "成本为移动加权平均；权重按已同步行情的持仓市值计算。"}>当前持仓</PanelTitle></div><span className="muted-label">{detail.name}</span></div>
-        {detail.positions.length === 0 ? <div className="market-history-empty">{ratioMode ? "还没有记录持仓。你可以只维护判断，不填写任何持仓信息。" : "这个组合还没有持仓。可以添加一条持仓快照，也可以进入高级记录方式。"}</div> : <PositionTable positions={detail.positions} onOpenCompany={onOpenCompany} ratioMode={ratioMode} />}
+        <div className="panel-heading"><div><span className="eyebrow">{ratioMode ? "可选个人视角" : "现在持有什么"}</span><PanelTitle hint={ratioMode ? "只记录你是否持有、仓位占比和可选成本；不填也不影响判断复核。" : "一只票一行，两个数：股数和成本价。改完点「存」就是现在的持仓，不用记买卖、不用补历史。"}>当前持仓</PanelTitle></div><span className="muted-label">{detail.name}</span></div>
+        {/* **仓位口径的组合还是只读那张老表**：它按设计不记股数，
+            而这个编辑器的两个数里有一个就是股数。 */}
+        {ratioMode
+          ? (detail.positions.length === 0
+              ? <div className="market-history-empty">还没有记录持仓。你可以只维护判断，不填写任何持仓信息。</div>
+              : <PositionTable positions={detail.positions} onOpenCompany={onOpenCompany} ratioMode />)
+          : activeId !== null && <HoldingsEditor portfolioId={activeId}
+              positions={detail.positions} companies={companies}
+              onChanged={() => reload()} onOpenCompany={onOpenCompany} />}
       </section>
       {/* **分散不是由只数决定的，是由它们会不会同时出事决定的。**
           紧跟在持仓表后面：上面那张表让你看见「我有几只」，
@@ -5071,7 +4643,6 @@ function PortfolioPage({ onOpenCompany, onLedgerChanged, onAfterDecision }: { on
 
 function LedgerFactsPanel({ company, onSaved }: { company: CompanyDetail; onSaved: () => Promise<void> }) {
   const [portfolios, setPortfolios] = useState<PortfolioSummary[]>([]);
-  const [open, setOpen] = useState(false);
   useEffect(() => { let current = true; getPortfolios().then((items) => { if (current) setPortfolios(items); }).catch(() => undefined); return () => { current = false; }; }, []);
   const ledger = company.ledger;
   // 这家公司记的是"占多少仓位"还是"多少股"。两种口径能显示的东西不一样：
@@ -5101,18 +4672,21 @@ function LedgerFactsPanel({ company, onSaved }: { company: CompanyDetail; onSave
 
   return <section className="panel ledger-facts-panel">
     <div className="panel-heading">
-      <div><span className="eyebrow">你的交易记录</span><PanelTitle hint="持仓由交易流水推导；每笔交易保留当时的理由与逻辑原文，不构成买卖建议。">持仓与决策账本</PanelTitle></div>
+      <div><span className="eyebrow">你的持仓</span><PanelTitle hint="股数与成本价由你自己填；这里只是把它跟这家公司的研究摆在一起，不构成买卖建议。">持仓与决策账本</PanelTitle></div>
       <div className="ledger-head-actions">
         {/* **清仓要由你说了算。** 仓位口径下没有股数，系统无从判断你是不是还拿着；
             原来它拿 shares=0 当"已清仓"，等于替你做了这个决定。现在只有你点这里才算。 */}
         {ratioLedger && (ledger!.weight_percent ?? 0) > 0 && <button className="text-button" type="button" disabled={closing}
           onClick={() => void markCleared()}>{closing ? "正在记…" : "标记已清仓"}</button>}
-        <button className="page-action" onClick={() => setOpen((value) => !value)}><Plus size={14} />记录交易</button>
+        {/* **「记录交易」删掉了。** 持仓改成「只记股数和成本价」之后，
+            手工记一笔 buy 不再影响持仓——点了没有任何效果的按钮比没有按钮更糟。
+            改持仓去持仓账本，登记成交去决策卡。 */}
       </div>
     </div>
     {ledgerError && <p className="form-error">{ledgerError}</p>}
-    {open && <TradeForm portfolios={portfolios} defaultPortfolioId={portfolios[0]?.id ?? null} companies={[]} fixedCompany={company} onSaved={onSaved} onCancel={() => setOpen(false)} />}
-    {!ledger ? <div className="market-history-empty">还没有这家公司的交易记录。买入或卖出后在这里记录，可以回看当时的依据。</div> : <>
+    {!ledger ? <div className="market-history-empty">
+      还没有这家公司的持仓。去<strong>持仓账本</strong>填股数和成本价，一分钟的事。
+    </div> : <>
       <div className="financial-facts-grid">
         {/* **仓位口径下 shares 永远是 0。** 只看 shares 的话，一笔刚记完的
             50% 持仓会被写成「已清仓」——使用者真撞上了这一幕。这里按口径分开显示：
@@ -7631,6 +7205,9 @@ function routeFromPathname(rawPathname = window.location.pathname): { page: Page
   if (pathname === "/screener" || pathname === "/screener/") return { page: "screener", companyId: null };
   if (pathname === "/heatmap" || pathname === "/heatmap/") return { page: "heatmap", companyId: null };
   if (pathname === "/tasks" || pathname === "/tasks/") return { page: "tasks", companyId: null };
+  if (pathname === "/decision-loop" || pathname === "/decision-loop/") return { page: "loop", companyId: null };
+  if (pathname === "/swing" || pathname === "/swing/") return { page: "swing", companyId: null };
+  if (pathname === "/rally" || pathname === "/rally/") return { page: "rally", companyId: null };
   if (pathname === "/data-sources" || pathname === "/data-sources/") return { page: "data", companyId: null };
   if (pathname === "/backups" || pathname === "/backups/") return { page: "backups", companyId: null };
   // 旧版的「决策归因」入口已收回：复核工作台只保留可行动的判断与证据。
@@ -7643,7 +7220,7 @@ function pathForPage(page: Exclude<Page, "company">): string {
 }
 
 function pathOf(page: Exclude<Page, "company">): string {
-  return page === "companies" ? "/companies" : page === "review" ? "/review" : page === "portfolio" ? "/portfolio" : page === "reviews" ? "/reviews" : page === "industries" ? "/industries" : page === "screener" ? "/screener" : page === "heatmap" ? "/heatmap" : page === "tasks" ? "/tasks" : page === "methods" ? "/methods" : page === "docs" ? "/documents" : page === "news" ? "/news" : page === "chain" ? "/industry-chains" : page === "reports" ? "/reports" : page === "prefs" ? "/preferences" : page === "data" ? "/data-sources" : page === "backups" ? "/backups" : "/";
+  return page === "companies" ? "/companies" : page === "review" ? "/review" : page === "portfolio" ? "/portfolio" : page === "reviews" ? "/reviews" : page === "industries" ? "/industries" : page === "screener" ? "/screener" : page === "heatmap" ? "/heatmap" : page === "tasks" ? "/tasks" : page === "methods" ? "/methods" : page === "docs" ? "/documents" : page === "news" ? "/news" : page === "chain" ? "/industry-chains" : page === "reports" ? "/reports" : page === "prefs" ? "/preferences" : page === "data" ? "/data-sources" : page === "backups" ? "/backups" : page === "loop" ? "/decision-loop" : page === "swing" ? "/swing" : page === "rally" ? "/rally" : "/";
 }
 
 /** 分区页签：一级导航压到五项之后，同一段里的几个页面靠它切换。
@@ -7846,27 +7423,6 @@ export default function App() {
   // 写判断的浮层。**挂在最外层**：从哪一页想起来的都能开，关掉回到原地。
   const [writing, setWriting] = useState<{ open: boolean; symbol?: string } | null>(null);
 
-  /**
-   * 刚记完一笔买卖，如果这只票还没有写过判断，就地问一句。
-   *
-   * **纪律只能绑在必然发生的动作上。** 对散户来说必然发生的只有两个：
-   * 看行情、下单。而这个产品原来在这两个时刻都不存在——
-   * 「写下一个判断」是个要你自己想起来去点的按钮，
-   * 结果是 12 家建档公司里只有 3 家写了逻辑。
-   *
-   * 刚下完单那一刻理由最新鲜，是这辈子最容易把它写下来的时刻。
-   *
-   * **已经写过的不打扰。** 每次买卖都弹一次的话，第三次之后你就学会了
-   * 无脑关掉它——那比不弹更糟，因为连真正该写的时候也一起关掉了。
-   */
-  async function promptThesisIfMissing(companyId: number) {
-    try {
-      const company = await getCompany(companyId);
-      if (company.theses.length === 0) setWriting({ open: true, symbol: company.symbol });
-    } catch {
-      // 查不到就算了：刚记完的那笔交易已经存下了，不该因为这句提醒失败而报错。
-    }
-  }
   async function loadDashboard(): Promise<DashboardSummary | null> {
     try { const next = await getDashboard(); setDashboard(next); setDataSource("api"); return next; }
     catch { setDataSource("error"); return null; }
@@ -7967,7 +7523,10 @@ export default function App() {
             远好过"最要紧的提醒在首页看不见"。
             （原注：Headline 当初就是把这条横幅和反方入口合并成一块放到第一屏的，
           再挂一条细横幅是同一件事说两遍。其余页面照旧跟着换页。 */}
-        {<Suspense fallback={null}><CounterHitBanner onOpenCompany={openCompany} /></Suspense>}{page === "dashboard" && <DashboardPage dashboard={dashboard} onOpenCompany={openCompany} onCreate={openCreate} onStartJudgment={startFirstJudgment} onRefreshMarket={() => void syncMarket()} refreshing={marketRefreshing} marketError={marketError} onNavigate={navigate} />}{page === "review" && <ReviewPage dashboard={dashboard} onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "companies" && <CompaniesPage showCreate={showCreate} onOpenCompany={openCompany} onCloseCreate={() => setShowCreate((value) => !value)} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} />}{page === "company" && selectedCompanyId !== null && <CompanyDetailPage companyId={selectedCompanyId} onBack={() => navigate("companies")} onArchiveChanged={refreshDashboard} />}{page === "portfolio" && <PortfolioPage onOpenCompany={openCompany} onLedgerChanged={refreshDashboard} onAfterDecision={promptThesisIfMissing} />}{page === "reviews" && <ReviewsPage onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "industries" && <IndustriesPage onOpenCompany={openCompany} />}{page === "screener" && <ScreenerPage onWrite={(symbol) => setWriting({ open: true, symbol })} />}{page === "heatmap" && <HeatmapPage onOpenCompany={openCompany} />}{page === "methods" && <MethodsPage onOpenCompany={openCompany} />}{page === "docs" && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">读文档</span><PanelTitle hint="每个结论都带页码，能翻回原文核。">年报、公告、研报，读进来问它</PanelTitle></div></div><Suspense fallback={<div className="empty-state">正在加载…</div>}><Documents /></Suspense></section>}
+        {<Suspense fallback={null}><CounterHitBanner onOpenCompany={openCompany} /></Suspense>}{page === "dashboard" && <DashboardPage dashboard={dashboard} onOpenCompany={openCompany} onCreate={openCreate} onStartJudgment={startFirstJudgment} onRefreshMarket={() => void syncMarket()} refreshing={marketRefreshing} marketError={marketError} onNavigate={navigate} />}{page === "review" && <ReviewPage dashboard={dashboard} onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "companies" && <CompaniesPage showCreate={showCreate} onOpenCompany={openCompany} onCloseCreate={() => setShowCreate((value) => !value)} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} />}{page === "company" && selectedCompanyId !== null && <CompanyDetailPage companyId={selectedCompanyId} onBack={() => navigate("companies")} onArchiveChanged={refreshDashboard} />}{page === "portfolio" && <PortfolioPage onOpenCompany={openCompany} onLedgerChanged={refreshDashboard} />}{page === "reviews" && <ReviewsPage onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "industries" && <IndustriesPage onOpenCompany={openCompany} />}{page === "screener" && <ScreenerPage onWrite={(symbol) => setWriting({ open: true, symbol })} />}{page === "heatmap" && <HeatmapPage onOpenCompany={openCompany} />}{page === "methods" && <MethodsPage onOpenCompany={openCompany} />}{page === "docs" && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">读文档</span><PanelTitle hint="每个结论都带页码，能翻回原文核。">年报、公告、研报，读进来问它</PanelTitle></div></div><Suspense fallback={<div className="empty-state">正在加载…</div>}><Documents /></Suspense></section>}
+      {page === "loop" && <Suspense fallback={<div className="empty-state page-loading">正在打开决策闭环…</div>}><DecisionLoop onOpenCompany={openCompany} onOpenPortfolio={() => navigate("portfolio")} /></Suspense>}
+      {page === "swing" && <Suspense fallback={<div className="empty-state page-loading">正在打开做 T 回测…</div>}><SwingLab onOpenCompany={openCompany} /></Suspense>}
+      {page === "rally" && <Suspense fallback={<div className="empty-state page-loading">正在打开涨跌归因…</div>}><RallyType onOpenCompany={openCompany} /></Suspense>}
       {page === "news" && <NewsPageView onOpenCompany={openCompany} />}
       {page === "chain" && <Suspense fallback={<div className="empty-state page-loading">正在打开产业链底图…</div>}><IndustryChainPage onOpenCompany={openCompany} /></Suspense>}
       {page === "reports" && <ReportsPage onOpenCompany={openCompany} />}

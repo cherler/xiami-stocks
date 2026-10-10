@@ -1,0 +1,50 @@
+# 虾米看股后端。抄主站 xiamimate-backend.service 的形状。
+# 安装：sudo cp deploy/systemd/xiamimate-stocks.service /etc/systemd/system/
+#       sudo systemctl daemon-reload && sudo systemctl enable --now xiamimate-stocks
+[Unit]
+Description=Xiamimate Stocks API (虾米看股)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# **不要以 root 跑。** 这个进程会拉外部接口、解析第三方 PDF、把模型返回的
+# JSON 喂给解析器——任何一处被打穿，root 意味着整台机器。
+#
+# 用户和目录属主由 deploy/harden-service.sh 一次性备好（幂等，可重复跑）。
+# **改这两行之前必须先跑那个脚本**：用户不存在时 systemd 会直接拒绝启动，
+# 而那是一次实打实的停服。
+User=xiamimate
+Group=xiamimate
+WorkingDirectory=/srv/xiami-stocks/app
+# .env 不进 Git，服务器上是唯一真源（含 MINIMAX_API_KEY）
+EnvironmentFile=-/srv/xiami-stocks/app/.env
+Environment=PYTHONPATH=/srv/xiami-stocks/app/apps/api
+# 研究数据库放在 /srv/xiami-stocks/data，和代码目录分开，git reset --hard 不会碰到它
+Environment=XIAMI_STOCK_DB=/srv/xiami-stocks/data/stock_decision.db
+# **访问控制由 .env 决定，unit 不再写死。**
+#
+# 这里原先写死过 STOCK_ACCESS，本意是防止「把本地 open 的 .env 拷上服务器」导致
+# 数据裸奔。但 systemd 的 Environment= 优先级高于 EnvironmentFile=，写死之后
+# 服务器 .env 里的设置反而失效——想关门时改了 .env 却不生效，比暴露更难排查。
+#
+# 改为：服务器 .env 必须显式写 STOCK_ACCESS（生产样板里是 owner），
+# 而代码侧的默认值已经偏安全（接了主站就默认 multi，绝不会是 open）。
+# 单 worker：进程内有调度器与后台任务锁，多 worker 会重复执行
+ExecStart=/srv/xiami-stocks/app/.venv/bin/uvicorn stock_decision.main:app \
+    --host 127.0.0.1 --port 8108 --workers 1
+Restart=always
+RestartSec=3
+# 只监听回环，由入口 Caddy 转发；不要开成 0.0.0.0
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+# 数据只写这一个目录（研究库与备份），除此之外整个文件系统对它只读。
+# **backups 就在这底下**（backup.py: database_path().parent / "backups"），
+# 少写这一行的话「立即备份」会在生产上报权限错误，而本地是好的。
+ReadWritePaths=/srv/xiami-stocks/data
+ProtectHome=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

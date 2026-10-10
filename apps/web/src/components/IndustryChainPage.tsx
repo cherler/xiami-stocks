@@ -13,16 +13,19 @@ import {
   getCompanies,
   getIndustryChain,
   getIndustryChainDraftJob,
+  getIndustryChainCompare,
   getIndustryChains,
   startIndustryChainDraft,
 } from "../api";
 import type {
   BackgroundJob,
+  ChainCompareView,
   CompanyRecord,
   IndustryChainDraftResult,
   IndustryChainThemeSummary,
   IndustryChainView,
 } from "../types";
+import { ChainCompareTable } from "./ChainCompareTable";
 import { confirmAction } from "../lib/confirm";
 import { useSpendGuard } from "../lib/credits";
 
@@ -47,6 +50,10 @@ export function IndustryChainPage({ onOpenCompany }: { onOpenCompany: (id: numbe
   const [view, setView] = useState<IndustryChainView | null>(null);
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
+  // 两种看法:底图看「货怎么一段段交出去」,横排看「同一环节里这些公司贵不贵、赚不赚钱」
+  const [layout, setLayout] = useState<"blueprint" | "compare">("blueprint");
+  const [compare, setCompare] = useState<ChainCompareView | null>(null);
+  const [compareError, setCompareError] = useState("");
   const [themeCategory, setThemeCategory] = useState("推荐主题");
   const [themeQuery, setThemeQuery] = useState("");
   const [creating, setCreating] = useState(false);
@@ -84,6 +91,17 @@ export function IndustryChainPage({ onOpenCompany }: { onOpenCompany: (id: numbe
     }).catch((caught) => { if (live) setError(messageOf(caught)); });
     return () => { live = false; };
   }, []);
+
+  // 横排这一屏按需取:切过去或换底图时才请求,回到底图不清空(来回切不用重新等)
+  useEffect(() => {
+    if (layout !== "compare" || activeId === null) return;
+    let live = true;
+    setCompareError("");
+    getIndustryChainCompare(activeId)
+      .then((data) => { if (live) setCompare(data); })
+      .catch((caught) => { if (live) { setCompare(null); setCompareError(messageOf(caught)); } });
+    return () => { live = false; };
+  }, [layout, activeId]);
 
   const draftRunning = draftJob !== null && (draftJob.status === "运行中" || draftJob.status === "排队中");
   const draftResult = draftJob?.status === "已完成" && draftJob.result
@@ -410,6 +428,16 @@ export function IndustryChainPage({ onOpenCompany }: { onOpenCompany: (id: numbe
             <em>{view.description || "尚未写研究边界"}</em>
           </div>
           <dl><div><dt>阶段</dt><dd>{view.stages.length}</dd></div><div><dt>节点</dt><dd>{view.node_count}</dd></div><div><dt>公司</dt><dd>{view.company_count}</dd></div></dl>
+          <div className="chain-layout-switch" role="group" aria-label="切换看法">
+            <button type="button" className={layout === "blueprint" ? "is-active" : ""}
+                    aria-pressed={layout === "blueprint"} onClick={() => setLayout("blueprint")}>
+              <Network size={13} />底图
+            </button>
+            <button type="button" className={layout === "compare" ? "is-active" : ""}
+                    aria-pressed={layout === "compare"} onClick={() => setLayout("compare")}>
+              <Building2 size={13} />按环节横排
+            </button>
+          </div>
           {editing && !view.is_default && <div className="chain-blueprint-actions">
             {nodes.length > 1 && <button className="deck-link" onClick={() => setConnecting((value) => !value)}><Link2 size={13} />连接节点</button>}
             <button className="deck-link" onClick={() => setAddingStage((value) => !value)}><Plus size={13} />添加阶段</button>
@@ -438,7 +466,13 @@ export function IndustryChainPage({ onOpenCompany }: { onOpenCompany: (id: numbe
           <button type="button" className="icon-button" aria-label="取消" onClick={() => setConnecting(false)}><X size={15} /></button>
         </form>}
 
-        <div className="chain-blueprint" style={{ gridTemplateColumns: `repeat(${Math.max(view.stages.length, 1)}, minmax(230px, 1fr))` }}>
+        {layout === "compare" && (compareError
+          ? <p className="chain-compare-empty" role="alert">{compareError}</p>
+          : compare
+            ? <ChainCompareTable view={compare} onOpenCompany={onOpenCompany} />
+            : <p className="chain-compare-empty">正在取这张底图上各环节的行情与财务…</p>)}
+
+        <div className="chain-blueprint" hidden={layout === "compare"} style={{ gridTemplateColumns: `repeat(${Math.max(view.stages.length, 1)}, minmax(230px, 1fr))` }}>
           {view.stages.map((stage, stageIndex) => <section className={`chain-stage chain-stage--${stage.stage_kind}`} key={stage.id}>
             <header className="chain-stage-head">
               {stageIndex > 0 && <span className="chain-stage-flow"><ArrowRight size={15} /></span>}

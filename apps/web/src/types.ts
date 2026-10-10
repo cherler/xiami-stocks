@@ -256,8 +256,13 @@ export interface CompanyProfileRefreshResult {
   as_of: string;
 }
 
-/** 账本上会发生的五种事。后三种不是「你的决定」，而是「发生在你身上的事」。 */
-export type TradeSide = "buy" | "sell" | "dividend" | "bonus" | "rights";
+/** 账本上会发生的六种事。
+ *
+ * 中间三种不是「你的决定」，而是「发生在你身上的事」。
+ * 最后一种连"事"都不是：期初持仓是一句**关于现状的断言**——
+ * 「到这天为止我手上有 N 股、均价 P」——它覆盖之前那段流水，不加在上面。
+ * 详见后端 schemas.TradeSide.opening。 */
+export type TradeSide = "buy" | "sell" | "dividend" | "bonus" | "rights" | "opening";
 
 export const TRADE_SIDE_LABEL: Record<TradeSide, string> = {
   buy: "买入",
@@ -265,6 +270,7 @@ export const TRADE_SIDE_LABEL: Record<TradeSide, string> = {
   dividend: "现金分红",
   bonus: "送股转增",
   rights: "配股",
+  opening: "持仓对账",
 };
 
 /** full = 记股数与价格；ratio = 只记仓位占比，不落任何金额。 */
@@ -382,42 +388,8 @@ export interface PortfolioUpdateInput {
   amount_mode?: AmountMode;
 }
 
-/** 从截图里读出来的一条流水。**读出来不等于记进账本**，每条都要确认。 */
-export interface ScannedTrade {
-  side: TradeSide;
-  trade_date: string | null;
-  symbol: string;
-  company_name: string;
-  shares: number | null;
-  price: number | null;
-  fee: number | null;
-  cash_amount: number | null;
-  company_id: number | null;
-  matched_by: string;
-  confidence: string;
-  note: string;
-  /** 长截图切成多段读，这一行被几段读到。只被读到一次 = 有一段漏了它，没被印证过。 */
-  seen_in: number;
-  cross_checked: boolean;
-}
 
-export interface TradeScanResult {
-  trades: ScannedTrade[];
-  unmatched: string[];
-  warnings: string[];
-  geometry?: { sliced: boolean; slices: number; source_width: number; source_height: number };
-  /** 逐行费用 vs 页头「交易税费」合计——这张图上唯一的校验和。 */
-  reconcile?: { stated: number; counted: number; gap: number; matched: boolean } | null;
-  model: string;
-  boundary: string;
-  billing: Billing;
-}
 
-export interface TradeBatchResult {
-  created: TradeRecord[];
-  failed: Array<{ index: number; error: string }>;
-  note: string;
-}
 
 export interface TradeInput {
   company_id: number;
@@ -1468,6 +1440,73 @@ export interface SupplyChainLink {
   detail: string; confidence: string; source: string; evidence_id: number | null; created_at: string;
 }
 export interface SupplyChainView { links: SupplyChainLink[]; confirmed: number; boundary: string; billing: Billing; }
+
+/** 按环节横排:同一条链上,每个环节里的公司并排比估值与盈利。 */
+export interface ChainCompareCompany {
+  company_id: number;
+  symbol: string;
+  company: string;
+  price: number | null;
+  pe_ttm: number | null;
+  pb: number | null;
+  total_market_cap: number | null;
+  revenue: number | null;
+  net_profit: number | null;
+  roe: number | null;
+  gross_margin: number | null;
+  revenue_growth: number | null;
+  net_profit_growth: number | null;
+  dividend_yield: number | null;
+  change_20d: number | null;
+  change_60d: number | null;
+  ytd_change: number | null;
+  sw_level1: string | null;
+  sw_level2: string | null;
+  fundamental_as_of: string | null;
+  detail: string;
+  source_url: string;
+  verification: string;
+}
+
+export interface ChainCompareNode {
+  node_id: number;
+  node: string;
+  stage: string;
+  what: string;
+  count: number;
+  market_cap_sum: number | null;
+  revenue_sum: number | null;
+  net_profit_sum: number | null;
+  revenue_count: number;
+  profit_count: number;
+  /** 环节市销率 = 合计市值 ÷ 合计营收,只算两边都有数的公司 */
+  ps: number | null;
+  ps_count: number;
+  pe_median: number | null;
+  pb_median: number | null;
+  roe_median: number | null;
+  gross_margin_median: number | null;
+  /** 这一环有几家取不到行情——不露出来的话,中位数会被悄悄算在少数几家身上 */
+  missing_quote: number;
+  /** 这一环的市场盘子(亿元人民币)+ 口径 + 出处;没有就是 null,别当成「不拥挤」 */
+  market_size_cny_yi: number | null;
+  market_size_basis: string;
+  market_size_source_url: string;
+  /** 环节拥挤度 = 这一环 A 股合计市值 ÷ 市场盘子 */
+  crowding: number | null;
+  companies: ChainCompareCompany[];
+}
+
+export interface ChainCompareView {
+  theme_id: number;
+  theme: string;
+  description: string;
+  node_count: number;
+  company_count: number;
+  /** 每一列非空的个数;整列为 0 的指标会被收起并注明原因 */
+  coverage: Record<string, number>;
+  nodes: ChainCompareNode[];
+}
 
 export interface IndustryChainThemeSummary {
   id: number; name: string; chain_type: string; description: string;

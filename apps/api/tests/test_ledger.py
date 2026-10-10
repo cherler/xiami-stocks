@@ -127,45 +127,10 @@ def test_五套预置策略都是可用的():
     assert not blocked, f"这些策略仍不可用：{blocked}"
 
 
-def test_one_bad_row_does_not_sink_the_whole_batch():
-    """**「逐条独立成败」此前是句空话。**
-
-    请求模型声明成 `list[TradeCreate]`，Pydantic 会在进 create_trades_batch
-    之前就把整批 422 掉 —— 截图里十条有一条读错，另外九条也一起被退回来，
-    而那正是读图想省掉的事。校验必须在循环里做。
-    """
-    from fastapi.testclient import TestClient
-
-    from stock_decision.main import app
-
-    client = TestClient(app)
-    # 组合默认口径是 ratio（只记比例），这里要的是记金额的那种
-    portfolio = client.post("/api/v1/portfolios",
-                            json={"name": "整批不该被拖累", "amount_mode": "full"}).json()
-    company = client.post("/api/v1/companies", json={
-        "symbol": "000651", "name": "格力电器", "industry": "白色家电"}).json()
-
-    body = client.post(f"/api/v1/portfolios/{portfolio['id']}/trades/batch", json={"trades": [
-        {"company_id": company["id"], "side": "buy", "trade_date": "2026-01-05",
-         "shares": 500, "price": 40.0, "fee": 5.0, "rationale": "第一笔，好的"},
-        # 坏的那条：股数 0（分红行照抄券商的数量栏就是这样）
-        {"company_id": company["id"], "side": "buy", "trade_date": "2026-01-06",
-         "shares": 0, "price": 41.0, "fee": 5.0, "rationale": "坏的这条"},
-        {"company_id": company["id"], "side": "buy", "trade_date": "2026-01-07",
-         "shares": 300, "price": 42.0, "fee": 5.0, "rationale": "第三笔，也是好的"},
-    ]})
-    assert body.status_code == 200, f"一条坏行把整批打回了：{body.text[:300]}"
-    result = body.json()
-    assert len(result["created"]) == 2, "好的那两条应该照常记进去"
-    assert [item["index"] for item in result["failed"]] == [1]
-    # 报错要是中文：这批错误会挨着中文流水显示，夹一句英文进去人以为系统坏了
-    assert "股数必须大于 0" == result["failed"][0]["error"], result["failed"][0]["error"]
-
-
 def test_a_trade_can_be_deleted():
     """**此前删不掉，而逻辑、报告、产业链、策略都能删。**
 
-    交易恰恰最需要能删：读交割单会把方向读反、会多读一行。
+    交易恰恰最需要能删：手记会记错组合、也会记重。
     删不掉的唯一补救是记一笔反向交易去抵消——那是往账本里写一笔
     **从未发生过的事**，比留着错的更糟。
     """
@@ -180,7 +145,7 @@ def test_a_trade_can_be_deleted():
         "symbol": "000651", "name": "格力电器", "industry": "白色家电"}).json()
     trade = client.post(f"/api/v1/portfolios/{portfolio['id']}/trades", json={
         "company_id": company["id"], "side": "buy", "trade_date": "2026-01-05",
-        "shares": 500, "price": 40.0, "fee": 5.0, "rationale": "读图读反了的一笔"}).json()
+        "shares": 500, "price": 40.0, "fee": 5.0, "rationale": "记错组合的一笔"}).json()
 
     before = client.get(f"/api/v1/portfolios/{portfolio['id']}").json()
     assert before["position_count"] == 1
