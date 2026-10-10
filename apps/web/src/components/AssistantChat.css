@@ -44,3 +44,11 @@
 @media (max-width: 600px) { .sa-header { padding: 18px 18px 12px; } .sa-conversation { padding: 18px; } .sa-composer { padding: 12px 18px; } .sa-footer { padding: 12px 18px; } }
 
 .sa-answer code { font-size: .95em; background: var(--surface-soft); padding: 1px 4px; border-radius: 3px; }
+
+.sa-onboarding { padding-top: 10px; }
+.sa-onboarding ol { padding-left: 22px; margin: 28px 0; }
+.sa-onboarding li { padding: 0 0 16px 6px; }
+.sa-onboarding li::marker { color: var(--accent-text); }
+.sa-onboarding li p { margin: 6px 0 0; }
+.sa-onboarding > a { display: inline-flex; align-items: center; gap: 8px; }
+.sa-onboarding > small { border-top: 1px solid var(--line); padding-top: 16px; }

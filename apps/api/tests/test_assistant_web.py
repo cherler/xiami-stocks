@@ -20,6 +20,7 @@ HEADERS = {'Origin':'http://testserver', 'X-Stock-Chat':'1'}
 
 @pytest.fixture(autouse=True)
 def fake_config(monkeypatch):
+    monkeypatch.setenv('STOCK_ASSISTANT_WEB_MODE', 'local')
     monkeypatch.setattr(agent, 'bridge_config', lambda: dict(CFG))
     monkeypatch.setattr(web, '_status_cache', (0, {}))
     async def helper(_payload, timeout=220):
@@ -138,3 +139,23 @@ def test_web_receipt_links_actual_report_and_is_isolated():
                 assert conn.execute('SELECT COUNT(*) AS n FROM assistant_web_messages').fetchone()['n']==0
     finally:
         access.reset_scope(token)
+
+
+def test_guide_is_public_and_never_reads_private_runtime(client, monkeypatch):
+    monkeypatch.setenv('STOCK_ASSISTANT_WEB_MODE', 'guide')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Guide must not read private runtime')
+    monkeypatch.setattr(agent, 'bridge_config', forbidden)
+    monkeypatch.setattr(web, 'helper', forbidden)
+    for scope in (access.OWNER_SCOPE, 'other', access.GUEST_SCOPE):
+        client.as_user(scope)
+        response = client.get('/api/v1/assistant/web/status')
+        assert response.status_code == 200
+        data = response.json()
+        assert data['mode'] == 'guide' and data['settings_url'] is None
+        assert not data['ready'] and not data['feishu_bound']
+        assert len(data['guide']) == 3
+        assert 'private' not in response.text and '18791' not in response.text
+        assert client.get('/api/v1/assistant/web/messages').status_code == 409
+        assert client.post('/api/v1/assistant/web/messages', json={'id':'a'*32, 'text':'保存'}, headers=HEADERS).status_code == 409
+        assert client.post('/api/v1/assistant/web/connect-feishu', headers=HEADERS).status_code == 409

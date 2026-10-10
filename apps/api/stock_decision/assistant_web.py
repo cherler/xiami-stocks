@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,7 +25,13 @@ class ChatInput(BaseModel):
     company_id: int | None = Field(default=None, gt=0)
 
 
+def guide_only():
+    return os.getenv("STOCK_ASSISTANT_WEB_MODE", "local").strip().lower() == "guide"
+
+
 def guard(request: Request, *, write=False):
+    if guide_only():
+        raise HTTPException(409, "线上提供接入指引，请在自己的本地虾米看股使用助手。")
     if access.current_scope() != access.OWNER_SCOPE or not access.is_owner():
         raise HTTPException(403, '这台私人助手只供它的主人使用。请在自己的本地虾米看股连接助手。')
     # Open local mode must not allow arbitrary remote pages to use the owner's assistant.
@@ -65,6 +72,14 @@ async def helper(payload: dict, timeout=220):
 
 async def status():
     global _status_cache
+    if guide_only():
+        return {'mode':'guide', 'ready':False, 'configured':False, 'feishu_bound':False,
+                'settings_url':None, 'message':'在自己的电脑运行助手，连接自己的飞书。',
+                'guide':[
+                    {'title':'在电脑上安装', 'done':False, 'text':'按安装说明运行虾米看股与助手，配置自己的模型服务。'},
+                    {'title':'先在本地网页聊一句', 'done':False, 'text':'打开本地虾米看股，点“问助手”，确认可以正常回复。'},
+                    {'title':'连接自己的飞书', 'done':False, 'text':'在本地助手的接入帮助中打开连接设置，扫码连接飞书应用、批准私聊配对，再完成提醒绑定。'},
+                ]}
     cfg = agent.bridge_config()
     enabled = configured()
     ready = False
@@ -79,7 +94,7 @@ async def status():
         ready = bool(_status_cache[1].get('ready'))
         settings_url = _status_cache[1].get('settings_url') or settings_url
     bound = bool(cfg.get('channel') and cfg.get('chat_id') and cfg.get('sender_ids'))
-    return {'ready':ready, 'configured':enabled, 'feishu_bound':bound,
+    return {'mode':'local', 'ready':ready, 'configured':enabled, 'feishu_bound':bound,
             'settings_url':settings_url,
             'message': '可以直接问，也可以让我记下想法。' if ready else
                 ('助手暂未连接。请启动本机助手，再点重新检查。' if enabled else '本机尚未接入助手。先完成一次安装，再回来聊天。'),

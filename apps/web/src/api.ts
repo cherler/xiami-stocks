@@ -1912,6 +1912,7 @@ export function narrateRally(companyId: number, window = 20): Promise<RallyView>
 
 
 export interface AssistantWebStatus {
+  mode: "local" | "guide";
   ready: boolean; configured: boolean; feishu_bound: boolean;
   settings_url: string | null; message: string;
   guide: { title: string; done: boolean; text: string }[];

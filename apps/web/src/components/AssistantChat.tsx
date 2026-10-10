@@ -31,6 +31,7 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
   const pending = useRef<{ id: string; text: string; company_id: number | null } | null>(null);
   const changed = useRef(onChanged);
   changed.current = onChanged;
+  const isGuide = status?.mode === "guide";
   const busy = sending || messages.some(m => m.state === "running");
 
   const refresh = useCallback(async () => {
@@ -50,8 +51,11 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
       } catch (e) { if (active) setError(errorMessage(e)); }
       if (active) timer = window.setTimeout(load, 2500);
     };
-    void load();
-    void getAssistantWebStatus().then(s => { if (active) setStatus(s); })
+    void getAssistantWebStatus().then(s => {
+      if (!active) return;
+      setStatus(s);
+      if (s.mode !== "guide") void load();
+    })
       .catch(e => { if (active) setError(errorMessage(e)); });
     return () => { active = false; window.clearTimeout(timer); };
   }, [refresh]);
@@ -65,13 +69,18 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
     return () => { active = false; };
   }, [companyId]);
 
+  useEffect(() => {
+    if (isGuide) dialog.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    else if (status?.ready) input.current?.focus();
+  }, [isGuide, status?.ready]);
+
   useEffect(() => { end.current?.scrollIntoView({ block: "nearest" }); }, [messages.length, messages.at(-1)?.state]);
 
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    input.current?.focus();
+    (input.current ?? dialog.current?.querySelector<HTMLButtonElement>("button"))?.focus();
     const handle = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); onClose(); }
       if (event.key === "Tab") {
@@ -109,7 +118,11 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
 
   async function checkConnection(bind = false) {
     setError("");
-    try { setStatus(await (bind ? connectAssistantFeishu() : getAssistantWebStatus())); await refresh(); }
+    try {
+      const next = await (bind ? connectAssistantFeishu() : getAssistantWebStatus());
+      setStatus(next);
+      if (next.mode !== "guide") await refresh();
+    }
     catch (e) { setError(errorMessage(e)); }
   }
 
@@ -119,10 +132,18 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
         <div className="sa-title"><MessageCircle size={20}/><h2>看股助手</h2></div>
         <button type="button" className="icon-button" onClick={onClose} aria-label="关闭助手"><X size={20}/></button>
         <p><span className={status?.ready ? "sa-dot is-ready" : "sa-dot"}/>
-          {status ? status.ready ? "在线 · 和飞书里的助手共用研究资料" : status.configured ? "暂未连接" : "尚未接入" : "正在检查连接…"}</p>
+          {isGuide ? "连接你自己的私人助手" : status ? status.ready ? "在线 · 和飞书里的助手共用研究资料" : status.configured ? "暂未连接" : "尚未接入" : "正在检查连接…"}</p>
       </header>
       <div className="sa-conversation" aria-label="助手对话">
-        {messages.length === 0 && <div className="sa-welcome">
+        {isGuide && <div className="sa-welcome sa-onboarding">
+          <h3>把看股助手接到你的飞书</h3>
+          <p>查股票、记想法、盯变化、核对计划，直接说就行。助手在你的电脑运行，用你自己的模型和研究资料。</p>
+          <ol>{status.guide.map(step => <li key={step.title}><strong>{step.title}</strong><p>{step.text}</p></li>)}</ol>
+          <a className="page-action" href="https://github.com/cherler/xiami-stocks/blob/main/apps/assistant/README.md" target="_blank" rel="noreferrer">查看安装与飞书接入说明 <ExternalLink size={14}/></a>
+          <p>已经在本地用过？继续使用原来的机器人，无需重新绑定。</p>
+          <small>线上目前提供接入指引。线上与本地的研究资料不会自动同步；电脑休眠或关机后，本地助手会暂停。</small>
+        </div>}
+        {status && !isGuide && messages.length === 0 && <div className="sa-welcome">
           <h3>股票的事，直接说。</h3>
           <p>问研究、记想法，或告诉我需要盯什么。</p>
           <div className="sa-examples">
@@ -144,8 +165,8 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
         <div ref={end}/>
       </div>
       {error && <p className="sa-error" role="alert">{error}</p>}
-      {status && !status.ready && <div className="sa-offline"><p>{status.message}</p><button type="button" className="text-button" onClick={() => void checkConnection()}>重新检查</button></div>}
-      <div className="sa-composer">
+      {status && !isGuide && !status.ready && <div className="sa-offline"><p>{status.message}</p><button type="button" className="text-button" onClick={() => void checkConnection()}>重新检查</button></div>}
+      {status && !isGuide && <div className="sa-composer">
         {company && <div className="sa-context"><span>{useCompany ? `当前公司：${company.name}` : "未附带当前页面的公司"}</span>
           <button type="button" className="text-button" onClick={() => setUseCompany(!useCompany)}>{useCompany ? "清除" : "带上当前公司"}</button></div>}
         <form onSubmit={e => { e.preventDefault(); void send(); }}>
@@ -157,8 +178,8 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
           <button type="submit" className="page-action sa-send" aria-label="发送消息" disabled={busy || !status?.ready || !text.trim()}><ArrowUp size={18}/></button>
         </form>
         <small>{busy ? "上一条还在处理，可以先写下一条。" : "Enter 发送，Shift + Enter 换行"}</small>
-      </div>
-      <footer className="sa-footer">
+      </div>}
+      {status && !isGuide && <footer className="sa-footer">
         <button type="button" className="text-button sa-guide-toggle" aria-expanded={guide} onClick={() => setGuide(!guide)}>
           {status?.feishu_bound ? "飞书已绑定 · 接入与帮助" : "连接飞书，在手机上继续聊"}<ChevronDown size={15}/></button>
         {guide && <div className="sa-guide">
@@ -169,7 +190,7 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
           <button type="button" className="text-button" onClick={() => void checkConnection(true)}>{status?.feishu_bound ? "检查飞书绑定" : "完成飞书绑定"}</button>
           <small>本机助手需要电脑保持运行。网页聊天记录仅显示在网页发送的消息。</small>
         </div>}
-      </footer>
+      </footer>}
     </aside>
   </div>;
 }

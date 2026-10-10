@@ -3239,7 +3239,8 @@ async def assistant_web_connect_feishu(request: Request):
 
 @app.get("/api/v1/assistant/web/status")
 async def assistant_web_status(request: Request) -> dict:
-    assistant_web.guard(request)
+    if not assistant_web.guide_only():
+        assistant_web.guard(request)
     return await assistant_web.status()
 
 
