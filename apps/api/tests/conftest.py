@@ -389,3 +389,9 @@ def _no_real_assistant_delivery(monkeypatch) -> None:
     monkeypatch.delenv("STOCK_ASSISTANT_WATCH", raising=False)
     monkeypatch.delenv("STOCK_ASSISTANT_SCOPE", raising=False)
     monkeypatch.setenv("STOCK_ASSISTANT_NANOBOT", "/nonexistent/nanobot-blocked-in-tests")
+
+
+@pytest.fixture(autouse=True)
+def isolate_assistant_bridge(monkeypatch, tmp_path):
+    # Tests must never read the user's bot identity or enqueue a real Feishu message.
+    monkeypatch.setenv("STOCK_ASSISTANT_BRIDGE_CONFIG", str(tmp_path / "absent-bridge.json"))

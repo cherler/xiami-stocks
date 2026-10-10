@@ -569,6 +569,7 @@ _RLS_ROOT_TABLES = (
     # 助理盯盘。提醒正文里有你的计划价和仓位计划，漏出去等于漏出你的交易计划。
     # 按 user_id 而不是 company_id 隔离：心跳那类提醒不挂在任何一家公司上。
     "assistant_watch_state", "assistant_alerts", "assistant_watch_runs",
+    "assistant_actions", "assistant_memory", "assistant_subscriptions",
 )
 
 # 挂在 companies 下面的表：归属由所属公司决定

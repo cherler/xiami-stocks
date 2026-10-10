@@ -28,6 +28,8 @@ import os
 import re
 import shutil
 import subprocess
+import difflib
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -146,6 +148,11 @@ def _my_sources(conn) -> tuple[dict[int, set[str]], dict[int, dict[str, Any]]]:
     add([row["company_id"] for row in conn.execute(
         f"""SELECT DISTINCT t.company_id FROM theses t JOIN companies c ON c.id = t.company_id
             WHERE 1=1{_sw('c')}""").fetchall()], "投资逻辑")
+    add([row["company_id"] for row in conn.execute(
+        f"SELECT company_id FROM assistant_subscriptions WHERE enabled = 1{_sw()}").fetchall()], "主动跟踪")
+    add([row["company_id"] for row in conn.execute(
+        f"""SELECT DISTINCT r.company_id FROM research_reports r JOIN companies c ON c.id = r.company_id
+            WHERE r.model = '飞书助理 · 个人记录'{_sw('c')}""").fetchall()], "随手记")
     held = _positions(conn)
     add(held, "持仓")
     return sources, held
@@ -195,6 +202,8 @@ def my_stocks() -> list[dict[str, Any]]:
         cards = {row["company_id"]: dict(row) for row in conn.execute(
             f"SELECT company_id, state, bands, order_plan FROM decision_cards "
             f"WHERE company_id IN ({marks}){_sw()}", ids).fetchall()}
+        subscribed = {row['company_id'] for row in conn.execute(
+            f"SELECT company_id FROM assistant_subscriptions WHERE enabled = 1{_sw()}").fetchall()}
         rows = []
         for company_id in ids:
             company = companies.get(company_id)
@@ -214,7 +223,7 @@ def my_stocks() -> list[dict[str, Any]]:
                 "in_lists": sorted(sources[company_id]),
                 "state": state,
                 "state_label": loop.STATES[state]["label"] if state in loop.STATES else "没有决策卡",
-                "watched": bool(card) and state not in QUIET_STATES and (bool(bands) or plan_price is not None),
+                "watched": company_id in subscribed or (bool(card) and state not in QUIET_STATES and (bool(bands) or plan_price is not None)),
                 "price": price,
                 "price_as_of": quote["as_of"],
                 "change_percent": quote["change_percent"],
@@ -236,20 +245,32 @@ def resolve(query: str) -> list[dict[str, Any]]:
     """
     from .repository import _sw
 
-    text = (query or "").strip()
+    text = unicodedata.normalize("NFKC", query or "").strip()
     if not text:
         return []
     with connection() as conn:
         sources, _ = _my_sources(conn)
-        rows = [dict(row) for row in conn.execute(
-            f"SELECT id, symbol, name FROM companies WHERE (name LIKE ? OR symbol = ?){_sw()} ORDER BY id",
-            (f"%{text}%", text)).fetchall()]
-    exact = [row for row in rows if row["name"] == text or row["symbol"] == text]
+        all_rows = [dict(row) for row in conn.execute(
+            f"SELECT id, symbol, name FROM companies WHERE 1=1{_sw()} ORDER BY id").fetchall()]
+    symbol = re.sub(r"^(SH|SZ|BJ)|\.(SH|SZ|BJ)$", "", text.upper())
+    aliases = {"宁德": "宁德时代", "茅台": "贵州茅台", "富联": "工业富联", "海光": "海光信息",
+               "格力": "格力电器"}
+    expanded = aliases.get(text, text)
+    rows = [row for row in all_rows if expanded in row['name'] or row['symbol'] == symbol]
+    match = "alias" if expanded != text else "exact"
+    if not rows and len(text) >= 3 and not any(ch.isdigit() for ch in text):
+        # Suggestions only: never fuzzy-correct a security code or price.
+        ranked_names = [(difflib.SequenceMatcher(None, text, row['name']).ratio(), row) for row in all_rows]
+        best = max((score for score, _ in ranked_names), default=0)
+        rows = [row for score, row in ranked_names if score >= max(0.70, best - 0.08)]
+        match = "fuzzy"
+    exact = [row for row in rows if row["name"] == expanded or row["symbol"] == symbol]
     pool = exact or rows
     mine = [row for row in pool if row["id"] in sources]
     ranked = mine or pool
     return [{"company_id": row["id"], "symbol": row["symbol"], "name": row["name"],
-             "mine": row["id"] in sources} for row in ranked[:8]]
+             "mine": row["id"] in sources, "match": match,
+             "input": text} for row in ranked[:8]]
 
 
 # ───────────────────────────────────────────────────────────── 近况
@@ -707,7 +728,8 @@ def watch_once(*, fetch: bool = True, send: bool = True) -> dict[str, Any]:
             status = "partial"
             notes.append(f"行情没刷到（{str(exc)[:120]}），用的是库里最后的价")
     try:
-        alerts = scan_price_alerts()
+        from .assistant_agent import scan_subscriptions
+        alerts = scan_price_alerts() + scan_subscriptions()
     except Exception as exc:
         alerts = []
         status = "failed"
@@ -719,10 +741,18 @@ def watch_once(*, fetch: bool = True, send: bool = True) -> dict[str, Any]:
 
     owner_scope = _setting("STOCK_ASSISTANT_SCOPE") or access.OWNER_SCOPE
     sendable = send and (access.current_scope() or access.OWNER_SCOPE) == owner_scope
+    if sendable:
+        with connection() as conn:
+            retries = [dict(row) for row in conn.execute(
+                f"SELECT id, company_id, message FROM assistant_alerts WHERE delivery IN ('failed', 'pending'){_sw()} "
+                "AND created_at >= ? ORDER BY id LIMIT 20", ((date.today() - timedelta(days=1)).isoformat(),)).fetchall()]
+        seen_ids = {alert['id'] for alert in alerts}
+        alerts.extend(row for row in retries if row['id'] not in seen_ids)
     sent = queued = failed = skipped = 0
     for alert in alerts:
         if sendable:
-            outcome, error = deliver(alert["message"])
+            from . import assistant_delivery
+            outcome, error = assistant_delivery.transfer(alert)
         else:
             outcome, error = "skipped", ("这一轮只看不发" if not send else "不是助理主人的数据域，只记不发")
         _record_delivery(alert["id"], outcome, error)
@@ -798,18 +828,20 @@ async def watch_loop(stop_event) -> None:
     def one_round() -> None:
         token = access.set_scope(_setting("STOCK_ASSISTANT_SCOPE") or access.OWNER_SCOPE)
         try:
-            result = watch_once()
+            from .assistant_delivery import reconcile
+            reconcile()
+            result = watch_once(fetch=is_trading_time())
             if result["alerts"] or result["status"] != "ok":
                 logger.info("助理盯盘：%s", result["detail"])
         finally:
             access.reset_scope(token)
 
     while not stop_event.is_set():
-        if is_trading_time():
-            try:
-                await asyncio.to_thread(one_round)
-            except Exception:
-                logger.exception("助理盯盘这一轮出错")
+        # Research updates and delivery receipts also matter after market hours.
+        try:
+            await asyncio.to_thread(one_round)
+        except Exception:
+            logger.exception("助理盯盘这一轮出错")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=WATCH_INTERVAL_SECONDS)
         except asyncio.TimeoutError:

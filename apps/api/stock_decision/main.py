@@ -5,11 +5,12 @@ from datetime import date, datetime, timedelta
 import logging
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import access, assistant, assistant_research, llm
+from . import access, assistant, assistant_agent, assistant_research, llm
 from .database import integrity_errors
 from .llm import credit_state
 from .database import database_path, initialize_database
@@ -3228,6 +3229,21 @@ def post_evaluate_triggers() -> dict:
 def get_assistant_my_stocks() -> list[dict]:
     """「你的票」：观察池 / 候选池、有决策卡的、写过逻辑的、持有的，四个清单的并集。"""
     return assistant.my_stocks()
+
+
+@app.post("/api/v1/assistant/command")
+async def post_assistant_command(request: Request) -> dict:
+    raw = await request.body()
+    if len(raw) > 800000:
+        raise HTTPException(status_code=413, detail="内容太长，请拆成几段保存。")
+    try:
+        envelope = assistant_agent.verify_request(raw, request.headers.get("X-Stock-Signature", ""))
+    except (assistant_agent.AgentError, ValidationError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        return await asyncio.to_thread(assistant_agent.dispatch, envelope)
+    except assistant_agent.AgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/assistant/resolve")

@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import shutil
 import subprocess
 import sys
@@ -101,6 +102,47 @@ def install_workspace_files() -> None:
         shutil.copyfile(HERE / "workspace" / "SOUL.md", soul)
 
 
+def configure_bridge(config: dict, binary: str) -> bool:
+    """Bind to the already-paired single-owner Feishu chat. Never guess a second user."""
+    path = NANOBOT_HOME / "stock-assistant-bridge.json"
+    workspace = Path(config.get("agents", {}).get("defaults", {}).get("workspace", str(WORKSPACE))).expanduser()
+    try:
+        pairing = json.loads((NANOBOT_HOME / "pairing.json").read_text())
+        approved = pairing.get("approved", {}).get("feishu", [])
+        triggers = json.loads((workspace / "triggers/triggers.json").read_text()).get("triggers", [])
+    except (OSError, ValueError):
+        print("助理写入尚未启用：先完成飞书配对与私聊提醒路由，再运行 setup。")
+        return False
+    routes = [t for t in triggers if t.get("enabled") and t.get("channel") == "feishu"]
+    chats = {t.get("chatId") for t in routes if t.get("chatId")}
+    if len(approved) != 1 or len(chats) != 1:
+        print("助理写入尚未启用：需要唯一的已配对用户与私人飞书路由，不能自动选择多人中的一个。")
+        return False
+    current = json.loads(path.read_text()) if path.exists() else {}
+    launcher = Path(binary).resolve().read_text().splitlines()[0]
+    interpreter = launcher[2:] if launcher.startswith("#!/") else ""
+    if not interpreter or not Path(interpreter).is_file():
+        print("无法确定 nanobot 的 Python 环境，助理写入适配器未安装。")
+        return False
+    installer = shutil.which("uv")
+    if not installer:
+        print("需要 uv 将适配器安装到 nanobot 独立环境。")
+        return False
+    installed = subprocess.run([installer, "pip", "install", "--python", interpreter,
+                                "--no-deps", "-e", str(HERE / "bridge")], capture_output=True, text=True)
+    if installed.returncode:
+        print("助理适配器安装失败，现有配置未改；检查 uv 安装环境。")
+        return False
+    current.update({"secret": current.get("secret") or secrets.token_hex(32),
+                    "api_base": "http://127.0.0.1:8108", "channel": "feishu",
+                    "chat_id": next(iter(chats)), "sender_ids": approved,
+                    "workspace": str(workspace), "nanobot_python": interpreter})
+    path.write_text(json.dumps(current, ensure_ascii=False, indent=2))
+    path.chmod(0o600)
+    print("✓ 助理写入已绑定到已有的私人飞书会话，密钥未输出")
+    return True
+
+
 def main() -> None:
     binary = _nanobot()
     if not CONFIG.exists():
@@ -109,6 +151,7 @@ def main() -> None:
     CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     CONFIG.chmod(0o600)
     install_workspace_files()
+    configure_bridge(config, binary)
     feishu = (config.get("channels") or {}).get("feishu") or {}
     print("✓ nanobot 已配好：MiniMax-M3、虾米看股工具、执行命令和读写文件已关")
     instances = feishu.get("instances", [feishu])

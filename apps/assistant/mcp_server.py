@@ -7,14 +7,8 @@
 运行：由 agent 框架拉起（stdio），不用手动跑。
     .venv/bin/python apps/assistant/mcp_server.py
 
-## 写入为什么要分两步（propose → confirm）
-
-助理能替你记成交，而记错一笔会让「计划内 / 计划外」一直错。
-所以记账分两步：先 `propose_fill` 把要记的内容摆给你看，你说「确认」之后才 `confirm_fill`。
-提议 15 分钟内有效，过期作废——隔天一句「确认」不该把昨天那笔翻出来记上。
-
-**这道闸挡不住一个执意要绕过它的模型**（模型自己也能调 confirm_fill）。
-它防的是「顺手就记了」；兜底是每一笔都能撤（`undo_fill`），并且回执里写着怎么撤。
+写入通过 nanobot 的 stock_assistant 插件，携带真实用户消息与身份并签名。
+本 MCP 仅提供读取和核验，模型不能在这里绕过成交确认。
 """
 
 from __future__ import annotations
@@ -22,12 +16,9 @@ from __future__ import annotations
 import functools
 import json
 import os
-import secrets
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
 from typing import Any
 
 import research_library
@@ -35,17 +26,15 @@ import research_library
 from mcp.server.fastmcp import FastMCP
 
 API = os.environ.get("STOCK_API_BASE", "http://127.0.0.1:8108").rstrip("/")
-PROPOSAL_TTL_SECONDS = 15 * 60
 
 mcp = FastMCP(
     "xiamimate-stock",
     instructions=(
-        "虾米看股的工具。判断都在虾米看股里算好了：核验和提醒的文字请原样转给用户，"
+        "虾米看股的工具。核验数字由虾米看股计算，回复要包含结论、所有不符合项和停止买入条件，"
         "不要改核验数字。研究问题可用研究工具总结、比较并给出有依据的判断。"
-        "研究建议不自动成为交易规则。记成交必须先 propose_fill、等用户说确认再 confirm_fill。"),
+        "研究建议不自动成为交易规则。保存与成交用 stock_assistant 工具。"),
 )
 
-_proposals: dict[str, dict[str, Any]] = {}
 
 
 class ApiError(RuntimeError):
@@ -108,7 +97,7 @@ def my_stocks() -> str:
     rows = _call("GET", "/api/v1/assistant/my-stocks")
     if not rows:
         return "你还没有任何票：观察池、候选池、决策卡、投资逻辑、持仓都是空的。"
-    lines = [f"你的票一共 {len(rows)} 只（✦ = 写了计划价或价格带、我在替你盯）："]
+    lines = [f"你的票一共 {len(rows)} 只（✦ = 已设置计划价、价格带或主动跟踪条件）："]
     for row in rows:
         price = row.get("price")
         bits = [f"{'✦' if row.get('watched') else '·'} {row['name']}（{row['symbol']}）",
@@ -135,9 +124,8 @@ def pre_trade_check(stock: str, price: float | None = None) -> str:
     """交易前核验：用户说「我想买X」「核验X」「X能不能买」时用。
     按用户自己写下的计划逐条对：价格、价格带、闭环状态、仓位、估值、近况、停止买入条件。
     stock 可以是简称或代码（如「宁德」「300750」）；price 不填就用最新价。
-    **用户看不见工具的返回。** 必须把返回的整段文字复制进你的回复：
-    不许说「见上面」、不许概括、不许删条目、不改数字、不加买卖建议。
-    每一条都是用户自己要求核的（解禁、停止买入条件这些最容易被概括掉）。"""
+    用户看不见工具返回。回复给结论、全部不符合项、停止买入条件和近期关键事件；
+    可以压缩已符合项，不改数字，不把计划内等同于可以买。"""
     target = _resolve(stock)
     if isinstance(target, str):
         return target
@@ -149,9 +137,8 @@ def pre_trade_check(stock: str, price: float | None = None) -> str:
     return (f"{RELAY_NOTE}\n{view['text']}")
 
 
-RELAY_NOTE = ("（给助理的话，不要转：主人看不见这段工具结果。把下面从「【」开始的整段"
-              "原样贴进你的回复，不要概括、不要说「结果在上面」。可以在最前面加一句"
-              "「不替你拿主意，按你自己写的计划核一遍：」。）")
+RELAY_NOTE = ("（给助理的话，不要转：用户看不到工具返回。先给核验结论，再列全部不符合项、"
+              "停止买入条件和关键事件；已符合项可压缩。不能改数字或说见上面。）")
 
 
 @mcp.tool()
@@ -165,7 +152,7 @@ def recent_alerts() -> str:
     if not status.get("watch_enabled"):
         lines.append("自动盯盘尚未开启。")
     elif not status.get("trading_time"):
-        lines.append("自动盯盘已开启；现在不在交易时段，等待下一交易时段。")
+        lines.append("自动检查已开启；行情刷新等待交易时段，研究变化继续检查。")
     runs = status.get("runs") or []
     if runs:
         last = runs[0]
@@ -221,73 +208,8 @@ def read_research_report(report_id: str, offset: int = 0) -> str:
     return json.dumps(research_library.read(report_id, offset), ensure_ascii=False)
 
 
-@mcp.tool()
-@_safely
-def propose_fill(stock: str, price: float, shares: float | None = None,
-                 filled_on: str | None = None, note: str = "") -> str:
-    """第一步：用户说「买了/成交了 X 价格 N 股」时，先把要记的这一笔摆给用户看，**还不记**。
-    返回一个提议号。用户明确说「确认」之后，才调用 confirm_fill(提议号)。
-    filled_on 是成交日期 YYYY-MM-DD，不填就是今天；note 记用户说的破例理由之类。"""
-    target = _resolve(stock)
-    if isinstance(target, str):
-        return target
-    if not (price and price > 0):
-        return "成交价要大于 0。"
-    day = (filled_on or date.today().isoformat())[:10]
-    try:
-        if date.fromisoformat(day) > date.today():
-            return "成交日期不能是未来的日子。"
-    except ValueError:
-        return f"看不懂这个日期：{filled_on}（要 YYYY-MM-DD）"
-    check = _call("GET", f"/api/v1/assistant/check/{target['company_id']}?price={price}")
-    for key in [k for k, v in _proposals.items() if time.time() - v["at"] > PROPOSAL_TTL_SECONDS]:
-        _proposals.pop(key, None)
-    proposal_id = f"{secrets.randbelow(9000) + 1000}"
-    _proposals[proposal_id] = {"company_id": target["company_id"], "name": target["name"],
-                               "price": price, "shares": shares, "filled_on": day,
-                               "note": note.strip(), "at": time.time()}
-    plan_price = check.get("plan_price")
-    drift = (f"，比你写的计划价 {plan_price:g} {'高' if price > plan_price else '低'} "
-             f"{abs(price / plan_price - 1) * 100:.1f}%" if plan_price else "，这只没写计划价")
-    lines = [f"要记的这一笔（提议号 {proposal_id}，15 分钟内有效）：",
-             f"{target['name']} {day} 成交价 {price:g}" + (f"，{shares:g} 股" if shares else "") + drift,
-             f"核验结论：{check.get('verdict')}"]
-    if note.strip():
-        lines.append(f"备注：{note.strip()}")
-    lines.append("回复「确认」我就记上；不对的话告诉我改哪里。")
-    return "\n".join(lines)
-
-
-@mcp.tool()
-@_safely
-def confirm_fill(proposal_id: str) -> str:
-    """第二步：**只有用户明确说了「确认」才调用。** 把 propose_fill 摆出来的那一笔记进虾米看股。"""
-    proposal = _proposals.get(str(proposal_id).strip())
-    if proposal is None:
-        return f"没有提议号 {proposal_id}（或者已经过了 15 分钟）。要重新说一遍成交价。"
-    if time.time() - proposal["at"] > PROPOSAL_TTL_SECONDS:
-        _proposals.pop(str(proposal_id).strip(), None)
-        return f"提议 {proposal_id} 已经过了 15 分钟，作废了。要重新说一遍成交价。"
-    body = {"price": proposal["price"], "filled_on": proposal["filled_on"], "note": proposal["note"]}
-    if proposal["shares"]:
-        body["shares"] = proposal["shares"]
-    card = _call("POST", f"/api/v1/companies/{proposal['company_id']}/fills", body)
-    _proposals.pop(str(proposal_id).strip(), None)
-    fills = sorted(card.get("fills") or [], key=lambda row: row.get("id") or 0)
-    fill_id = fills[-1]["id"] if fills else None
-    return (f"记上了：{proposal['name']} {proposal['filled_on']} 成交价 {proposal['price']:g}"
-            + (f"，{proposal['shares']:g} 股" if proposal["shares"] else "")
-            + (f"。记错了就说「撤销 {fill_id}」。" if fill_id else "。")
-            + "（这只记成交，不改你的持仓——持仓还是你自己填的那两个数。）")
-
-
-@mcp.tool()
-@_safely
-def undo_fill(fill_id: int) -> str:
-    """撤掉一条记错的成交登记（confirm_fill 回执里给过号）。"""
-    _call("DELETE", f"/api/v1/fills/{int(fill_id)}")
-    return f"撤掉了成交登记 {fill_id}。"
-
+# Writes deliberately live in the nanobot context-aware adapter. MCP stdio does
+# not supply the original sender/message, so it cannot authenticate confirmation.
 
 if __name__ == "__main__":
     mcp.run()

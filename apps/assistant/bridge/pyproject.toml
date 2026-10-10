@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiamimate-stock-assistant-bridge"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "Trusted request context adapter for the private stock assistant"
+
+[project.entry-points."nanobot.tools"]
+xiamimate_stock_assistant = "stock_assistant_bridge:StockAssistantTool"
+
+[tool.setuptools]
+py-modules = ["stock_assistant_bridge"]

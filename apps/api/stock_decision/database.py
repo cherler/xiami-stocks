@@ -25,7 +25,7 @@ _default_path = Path(__file__).resolve().parents[3] / "var" / "stock_decision.db
 _database_path = Path(os.getenv("XIAMI_STOCK_DB", _default_path)).resolve()
 
 # 结构版本随每次表结构变更递增；备份文件会记录它，恢复时用于判断兼容性。
-SCHEMA_VERSION = 57
+SCHEMA_VERSION = 58
 
 
 def backend() -> str:
@@ -1794,6 +1794,45 @@ def _initialize_sqlite() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_assistant_watch_runs_recent
                 ON assistant_watch_runs(user_id, id DESC);
+
+            -- 助理对话的动作和记忆：与正式研究共库，重启不丢，按用户隔离。
+            CREATE TABLE IF NOT EXISTS assistant_actions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                session_key TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+                payload TEXT NOT NULL DEFAULT '{}',
+                original_text TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'running',
+                result TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, request_key)
+            );
+            CREATE TABLE IF NOT EXISTS assistant_memory (
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                memory_key TEXT NOT NULL,
+                value TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, memory_key)
+            );
+            CREATE TABLE IF NOT EXISTS assistant_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT '__owner__',
+                company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                threshold REAL,
+                direction TEXT NOT NULL DEFAULT 'below',
+                reason TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                inside INTEGER NOT NULL DEFAULT 0,
+                snapshot TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, company_id, kind, direction)
+            );
 
             -- ── 产业链环节的同行 ───────────────────────────────────────────
             --
