@@ -570,6 +570,7 @@ _RLS_ROOT_TABLES = (
     # 按 user_id 而不是 company_id 隔离：心跳那类提醒不挂在任何一家公司上。
     "assistant_watch_state", "assistant_alerts", "assistant_watch_runs",
     "assistant_actions", "assistant_memory", "assistant_subscriptions", "assistant_web_messages",
+    "assistant_cloud_jobs", "assistant_cloud_accounts", "assistant_cloud_budget",
 )
 
 # 挂在 companies 下面的表：归属由所属公司决定

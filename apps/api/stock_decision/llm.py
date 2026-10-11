@@ -129,6 +129,9 @@ class Principal:
 _principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
     "stock_decision_principal", default=None)
 
+# Hosted conversational jobs must not inherit the interactive fallback-to-free.
+_strict_billing: contextvars.ContextVar[bool] = contextvars.ContextVar('strict_billing', default=False)
+
 
 def set_principal(principal: Principal | None) -> contextvars.Token:
     return _principal.set(principal)
@@ -349,9 +352,13 @@ def reserve(module: str, task: str, estimated_tokens: int, searches: int = 0) ->
     config = load_env()
     base = config["XM_API_BASE"]
     if not base:
+        if _strict_billing.get():
+            raise CreditsError('账户计费服务未配置，助手暂时不可用。')
         return meter
     principal = _principal.get() or background_principal()
     if not principal or not principal.usable():
+        if _strict_billing.get():
+            raise CreditsError('无法确认本次用量的账户，已停止处理。')
         meter.note = "未识别到登录身份,本次不计费"
         return meter
 
@@ -369,6 +376,8 @@ def reserve(module: str, task: str, estimated_tokens: int, searches: int = 0) ->
     try:
         status, data = _post(base, "/v1/credits/reserve", payload, meter._headers)
     except Exception as exc:
+        if _strict_billing.get():
+            raise CreditsError('积分服务暂时不可达，助手已暂停本次处理。') from exc
         # 闸口连不上 ≠ 用户没钱。挡住调用会让主站抖一下就把整个研究台弄瘫,
         # 而漏计的这一次有日志可查、金额也有限。两害相权取其轻。
         #
@@ -382,13 +391,19 @@ def reserve(module: str, task: str, estimated_tokens: int, searches: int = 0) ->
     if status == 402:
         raise CreditsError(data.get("error") or "AI 额度不足。", "no_credits")
     if status == 401:
+        if _strict_billing.get():
+            raise CreditsError('账户验证已失效，请重新登录。')
         meter.note = "未登录,本次不计费"
         return meter
     if status >= 400:
+        if _strict_billing.get():
+            raise CreditsError('积分服务暂时无法确认额度，请稍后再试。')
         log.warning("积分冻结被拒 status=%s data=%s", status, data)
         _fall_back_unbilled(meter, billing_ledger.REASON_REJECTED, estimated_tokens)
         return meter
 
+    if _strict_billing.get() and not data.get('hold_id'):
+        raise CreditsError('积分服务未确认额度，已停止本次处理。')
     meter.active = True
     meter.hold_id = str(data.get("hold_id") or "")
     meter.held = int(data.get("held") or 0)

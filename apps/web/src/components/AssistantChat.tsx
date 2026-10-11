@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, MessageCircle, X, ChevronDown, ExternalLink } from "lucide-react";
-import { getAssistantWebStatus, getAssistantMessages, sendAssistantMessage, connectAssistantFeishu, getCompany,
+import { getAssistantWebStatus, getAssistantMessages, sendAssistantMessage, connectAssistantFeishu, confirmCloudFeishu, disconnectCloudFeishu, getCompany,
   type AssistantWebStatus, type AssistantChatMessage } from "../api";
 import { errorMessage } from "../lib/errormessage";
+import { apiUrl } from "../config";
 import "./AssistantChat.css";
 
 type Props = { companyId: number | null; onClose: () => void;
@@ -32,7 +33,16 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
   const changed = useRef(onChanged);
   changed.current = onChanged;
   const isGuide = status?.mode === "guide";
-  const busy = sending || messages.some(m => m.state === "running");
+  const isCloud = status?.mode === "cloud";
+  const busy = sending || messages.some(m => m.state === "running" || m.state === "queued");
+
+  useEffect(() => {
+    if (!isCloud) return;
+    const timer = window.setInterval(() => {
+      void getAssistantWebStatus().then(setStatus).catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [isCloud]);
 
   const refresh = useCallback(async () => {
     const rows = await getAssistantMessages();
@@ -155,7 +165,8 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
         {messages.map(message => <section className="sa-turn" key={message.id}>
           <div className="sa-user"><span>你{message.company_name ? ` · ${message.company_name}` : ""}</span><p>{message.content}</p></div>
           <div className="sa-answer"><span>看股助手</span>
-            {message.state === "running" ? <p className="sa-wait" role="status">正在查阅和处理，关掉窗口也会继续。</p>
+            {message.state === "queued" ? <p className="sa-wait" role="status">已排队，轮到后自动处理，关掉窗口也会继续。</p>
+              : message.state === "running" ? <p className="sa-wait" role="status">正在查阅和处理，关掉窗口也会继续。</p>
               : <p>{answerText(message.answer || message.error)}</p>}
             {message.actions.filter(a => a.company_id && ["remember", "correct", "undo"].includes(a.operation)).map((a, index) =>
               <button type="button" className="text-button" key={`${a.record_id}-${index}`} onClick={() => onOpenCompany(a.company_id!)}>查看公司记录</button>)}
@@ -187,8 +198,29 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
           <ol>{status?.guide.map(step => <li key={step.title}><strong>{step.done ? "已完成 · " : ""}{step.title}</strong><p>{step.text}</p></li>)}</ol>
           {status?.settings_url && <a className="text-button" href={status.settings_url} target="_blank" rel="noreferrer">打开连接设置 <ExternalLink size={13}/></a>}
           {!status?.configured && <a className="text-button" href="https://github.com/cherler/xiami-stocks/blob/main/apps/assistant/README.md" target="_blank" rel="noreferrer">查看本机安装说明 <ExternalLink size={13}/></a>}
-          <button type="button" className="text-button" onClick={() => void checkConnection(true)}>{status?.feishu_bound ? "检查飞书绑定" : "完成飞书绑定"}</button>
-          <small>本机助手需要电脑保持运行。网页聊天记录仅显示在网页发送的消息。</small>
+          {isCloud ? <>
+            {status.feishu?.error && <p role="status">{status.feishu.error}</p>}
+            {status.feishu?.qr_url && <div className="sa-qr">
+              <img width="200" height="200" alt="使用飞书扫码连接看股助手" src={apiUrl(`/api/v1/assistant/cloud/feishu/qr?v=${encodeURIComponent(status.feishu.expires_at || "")}`)}/>
+              <p>用自己的飞书扫码，完成应用创建后回到这里。</p>
+              <a href={status.feishu.qr_url} target="_blank" rel="noreferrer">在手机上打开连接页面</a>
+            </div>}
+            {status.feishu?.state === "awaiting_confirmation" && <div>
+              <p>应用已创建。如果刚才是你本人扫码，确认后即可使用。</p>
+              <button type="button" className="page-action" onClick={() => void confirmCloudFeishu().then(setStatus).catch(e => setError(errorMessage(e)))}>是我扫码的，完成连接</button>
+            </div>}
+            {["authorized", "connected"].includes(status.feishu?.state || "") && status.feishu?.app_id &&
+              <a className="page-action" href={`https://applink.feishu.cn/client/bot/open?appId=${encodeURIComponent(status.feishu.app_id)}`} target="_blank" rel="noreferrer">去飞书聊聊 <ExternalLink size={13}/></a>}
+            {[undefined, "failed", "disconnected"].includes(status.feishu?.state) &&
+              <button type="button" className="page-action" onClick={() => void checkConnection(true)}>扫码连接飞书</button>}
+            {["requested", "registering"].includes(status.feishu?.state || "") && !status.feishu?.qr_url && <p role="status">正在准备二维码…</p>}
+            {status.feishu?.state && !["failed", "disconnected"].includes(status.feishu.state) &&
+              <button type="button" className="text-button" onClick={() => void disconnectCloudFeishu().then(setStatus).catch(e => setError(errorMessage(e)))}>断开飞书连接</button>}
+            <small>助手在云端运行，电脑关机也能用。聊天保留 90 天，保存到公司档案的研究会继续保留。按账户积分计费，繁忙时排队；本地助手与这里独立。</small>
+          </> : <>
+            <button type="button" className="text-button" onClick={() => void checkConnection(true)}>{status?.feishu_bound ? "检查飞书绑定" : "完成飞书绑定"}</button>
+            <small>本机助手需要电脑保持运行。网页聊天记录仅显示在网页发送的消息。</small>
+          </>}
         </div>}
       </footer>}
     </aside>

@@ -3237,6 +3237,43 @@ async def assistant_web_connect_feishu(request: Request):
     return await assistant_web.connect_feishu()
 
 
+@app.post('/api/v1/assistant/cloud/feishu/confirm')
+async def assistant_cloud_feishu_confirm(request: Request):
+    assistant_web.guard(request, write=True)
+    from .assistant_cloud_feishu import confirm_connection
+    from .assistant_cloud import enabled
+    if not enabled():
+        raise HTTPException(404, '云端助手未启用。')
+    return await asyncio.to_thread(confirm_connection)
+
+
+@app.post('/api/v1/assistant/cloud/feishu/disconnect')
+async def assistant_cloud_feishu_disconnect(request: Request):
+    assistant_web.guard(request, write=True)
+    from .assistant_cloud_feishu import disconnect
+    from .assistant_cloud import enabled
+    if not enabled():
+        raise HTTPException(404, '云端助手未启用。')
+    return await asyncio.to_thread(disconnect)
+
+
+@app.get('/api/v1/assistant/cloud/feishu/qr')
+def assistant_cloud_feishu_qr(request: Request):
+    assistant_web.guard(request)
+    from .assistant_cloud import enabled, status
+    if not enabled():
+        raise HTTPException(404, '云端助手未启用。')
+    url=status().get('feishu',{}).get('qr_url')
+    if not url:
+        raise HTTPException(404, '二维码尚未生成或已失效。')
+    import io
+    import qrcode
+    from fastapi.responses import Response
+    stream=io.BytesIO()
+    qrcode.make(url).save(stream,format='PNG')
+    return Response(stream.getvalue(),media_type='image/png',headers={'Cache-Control':'no-store'})
+
+
 @app.get("/api/v1/assistant/web/status")
 async def assistant_web_status(request: Request) -> dict:
     if not assistant_web.guide_only():

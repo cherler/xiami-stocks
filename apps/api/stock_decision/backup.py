@@ -101,6 +101,9 @@ AUTHORED_TABLES = (
 # 「不导」必须是一个被写下来的决定，不能是"忘了加"——这两件事在代码里
 # 长得一模一样，而后者正是上面那十几张表的来历。
 NOT_EXPORTED = {
+    "assistant_cloud_jobs": "云端任务调度流水，聊天原文另行导出",
+    "assistant_cloud_accounts": "飞书绑定凭据不得进入个人研究导出",
+    "assistant_cloud_budget": "服务用量限制台账，不是研究内容",
     "background_jobs": "后台任务流水，重跑就有",
     "news_items": "抓回来的资讯，重抓就有",
     "daily_briefings": "每日简报，可以重新生成",

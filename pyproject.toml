@@ -40,6 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cloud-assistant = [
+  "lark-oapi==1.7.3",
+  "cryptography>=46,<49",
+  "qrcode>=8,<9",
+]
 # 助理（apps/assistant/mcp_server.py）：把虾米看股的几件事做成 MCP 工具交给 agent 框架。
 # **装在本仓自己的环境里，不借 nanobot 的**——那样换框架时工具服务就跟着倒了。
 assistant = [

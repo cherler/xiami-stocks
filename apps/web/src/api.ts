@@ -1912,14 +1912,15 @@ export function narrateRally(companyId: number, window = 20): Promise<RallyView>
 
 
 export interface AssistantWebStatus {
-  mode: "local" | "guide";
+  mode: "local" | "guide" | "cloud";
+  feishu?: { state?: string; qr_url?: string; expires_at?: string; app_id?: string; chat_id?: string; error?: string };
   ready: boolean; configured: boolean; feishu_bound: boolean;
   settings_url: string | null; message: string;
   guide: { title: string; done: boolean; text: string }[];
 }
 export interface AssistantChatMessage {
   id: string; content: string; company_id: number | null; company_name: string;
-  state: "running" | "done" | "interrupted"; answer: string; error: string;
+  state: "queued" | "running" | "done" | "interrupted"; answer: string; error: string;
   created_at: string; updated_at: string;
   actions: { operation: string; company_id: number | null; record_id?: string; url?: string }[];
 }
@@ -1931,5 +1932,12 @@ export const sendAssistantMessage = (payload: { id: string; text: string; compan
   });
 
 export const connectAssistantFeishu = () => apiFetch<AssistantWebStatus>("/api/v1/assistant/web/connect-feishu", {
+  method: "POST", headers: { "X-Stock-Chat": "1" },
+});
+
+export const confirmCloudFeishu = () => apiFetch<AssistantWebStatus>("/api/v1/assistant/cloud/feishu/confirm", {
+  method: "POST", headers: { "X-Stock-Chat": "1" },
+});
+export const disconnectCloudFeishu = () => apiFetch<AssistantWebStatus>("/api/v1/assistant/cloud/feishu/disconnect", {
   method: "POST", headers: { "X-Stock-Chat": "1" },
 });

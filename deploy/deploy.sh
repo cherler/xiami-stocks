@@ -37,7 +37,19 @@ bash deploy/check-gate.sh
 echo
 echo "── 2/5 同步 Python 依赖 ────────────────────"
 # 用 pip install -e . 而不是逐个装:pyproject 是唯一真源,新增的依赖自动跟上。
-./.venv/bin/pip install -q -e . 2>&1 | tail -3
+cloud_mode=$(./.venv/bin/python - <<'PY'
+from pathlib import Path
+values = dict(line.split('=', 1) for line in Path('.env').read_text().splitlines()
+              if '=' in line and not line.lstrip().startswith('#'))
+print('1' if values.get('STOCK_ASSISTANT_WEB_MODE', '').strip() == 'cloud' else '0')
+PY
+)
+if [ "$cloud_mode" = "1" ]; then
+    ./.venv/bin/pip install -q -e '.[cloud-assistant]' 2>&1 | tail -3
+    ./.venv/bin/python -c 'import lark_oapi, cryptography, qrcode; assert hasattr(lark_oapi, "register_app")'
+else
+    ./.venv/bin/pip install -q -e . 2>&1 | tail -3
+fi
 # **装完必须验一遍能不能 import。** pip 说安装成功、import 却失败是有的
 # (架构不匹配、C 扩展缺系统库),而那种情况下功能照样静静地不工作。
 ./.venv/bin/python - <<'PY'
@@ -89,6 +101,14 @@ echo "── 5/5 重启后端并自检 ─────────────�
 systemctl restart "$SERVICE"
 sleep 4
 systemctl is-active "$SERVICE"
+if [ "$cloud_mode" = "1" ]; then
+    cp deploy/systemd/xiamimate-stock-assistant.service /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable xiamimate-stock-assistant
+    systemctl restart xiamimate-stock-assistant
+    sleep 3
+    systemctl is-active xiamimate-stock-assistant
+fi
 
 # 从入口验,不是从后端端口验 —— 路径分流那一层出错时后端是好的,用户看到的却是白页。
 for path in /stocks/ /stocks-api/health; do

@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import access, assistant_agent as agent
+from . import access, assistant_agent as agent, assistant_cloud as cloud
 from .database import connection, now_iso
 
 _tasks: set[asyncio.Task] = set()
@@ -30,6 +30,14 @@ def guide_only():
 
 
 def guard(request: Request, *, write=False):
+    if cloud.enabled():
+        if access.mode() == 'open' or access.current_scope() in {None, access.GUEST_SCOPE}:
+            raise HTTPException(401, '请先登录，再使用云端助手。')
+        if write:
+            expected = os.getenv('STOCK_CLOUD_ORIGIN', 'https://xiamimate.com')
+            if request.headers.get('origin') != expected or request.headers.get('x-stock-chat') != '1':
+                raise HTTPException(403, '请从虾米看股的助手入口操作。')
+        return
     if guide_only():
         raise HTTPException(409, "线上提供接入指引，请在自己的本地虾米看股使用助手。")
     if access.current_scope() != access.OWNER_SCOPE or not access.is_owner():
@@ -72,6 +80,8 @@ async def helper(payload: dict, timeout=220):
 
 async def status():
     global _status_cache
+    if cloud.enabled():
+        return await asyncio.to_thread(cloud.status)
     if guide_only():
         return {'mode':'guide', 'ready':False, 'configured':False, 'feishu_bound':False,
                 'settings_url':None, 'message':'在自己的电脑运行助手，连接自己的飞书。',
@@ -112,7 +122,7 @@ def history():
             WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 60''', (access.current_scope(),)).fetchall()]
         actions = _action_map(conn, rows)
         for row in rows:
-            if row['state'] == 'running' and row['updated_at'] < (datetime.now()-timedelta(minutes=5)).isoformat():
+            if not cloud.enabled() and row['state'] == 'running' and row['updated_at'] < (datetime.now()-timedelta(minutes=5)).isoformat():
                 conn.execute("UPDATE assistant_web_messages SET state='interrupted', error=? WHERE id=? AND user_id=?",
                     ('连接已中断，操作结果可能已保存，请先核对记录。', row['id'],access.current_scope()))
                 row.update(state='interrupted', error='连接已中断，操作结果可能已保存，请先核对记录。')
@@ -139,6 +149,8 @@ def _action_map(conn, messages):
 
 
 async def submit(data: ChatInput):
+    if cloud.enabled():
+        return await asyncio.to_thread(cloud.enqueue, data)
     if not configured():
         raise HTTPException(503, '本机尚未接入助手，请先完成连接。')
     text = data.text.strip()
@@ -187,6 +199,10 @@ async def _run(message_id, prompt):
 
 async def connect_feishu():
     global _status_cache
+    if cloud.enabled():
+        from .assistant_cloud_feishu import request_connection
+        await asyncio.to_thread(request_connection)
+        return await status()
     if not configured():
         raise HTTPException(503, '请先安装并启动本机助手。')
     try:

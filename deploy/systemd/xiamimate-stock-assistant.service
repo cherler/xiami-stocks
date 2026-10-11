@@ -1,0 +1,38 @@
+[Unit]
+Description=Xiami hosted stock assistant (shared bounded workers)
+After=network-online.target xiamimate-stocks.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xiamimate
+Group=xiamimate
+WorkingDirectory=/srv/xiamimate/xiamimate-stock-lab
+EnvironmentFile=/srv/xiamimate/xiamimate-stock-lab/.env
+Environment=PYTHONPATH=/srv/xiamimate/xiamimate-stock-lab/apps/api
+Environment="PGOPTIONS=-c statement_timeout=15000 -c lock_timeout=5000"
+ExecStart=/srv/xiamimate/xiamimate-stock-lab/.venv/bin/python -m stock_decision.assistant_cloud_worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+MemoryHigh=1536M
+MemoryMax=2G
+CPUQuota=100%
+TasksMax=192
+LimitNOFILE=1024
+OOMScoreAdjust=500
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/xiamimate/stocks-data
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=40
+
+[Install]
+WantedBy=multi-user.target
