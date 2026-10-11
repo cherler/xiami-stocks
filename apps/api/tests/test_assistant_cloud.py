@@ -13,6 +13,24 @@ from test_idor import client  # noqa: F401
 HEADERS={'Origin':'https://xiamimate.com','X-Stock-Chat':'1'}
 
 
+def test_postgres_restart_registry_preserves_text_ids():
+    from stock_decision import pgbackend
+    from stock_decision.database import is_postgres
+    if not is_postgres():
+        pytest.skip('PostgreSQL process-restart registry')
+    # A worker starts against an existing schema, without running migrations.
+    # Tests normally initialize the schema and otherwise miss this path.
+    with connection() as conn:
+        pgbackend._load_registry(conn._raw)
+    assert pgbackend.needs_returning('INSERT INTO assistant_web_messages(id) VALUES (?)') is None
+    assert pgbackend.needs_returning('INSERT INTO assistant_cloud_jobs(id) VALUES (?)') is None
+    with cloud.scope('restart-test'):
+        cid = company()
+        assert isinstance(cid, int) and cid > 0
+        cloud.enqueue(message(text='启动验证'))
+        assert web.history()[0]['id'] == 'a' * 32
+
+
 @pytest.fixture(autouse=True)
 def hosted(monkeypatch):
     monkeypatch.setenv('STOCK_ASSISTANT_WEB_MODE','cloud')

@@ -422,7 +422,10 @@ def _load_registry(raw) -> None:
     with raw.cursor() as cur:
         cur.execute(
             "SELECT c.relname AS name, "
-            "       bool_or(a.attname = 'id' AND a.attnum > 0) AS has_id "
+            # Match translate_ddl's numeric IDs. Text message/job IDs must not
+            # acquire an implicit RETURNING id followed by int(id) on restart.
+            "       bool_or(a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped "
+            "               AND a.atttypid IN ('int2'::regtype, 'int4'::regtype, 'int8'::regtype)) AS has_id "
             "FROM pg_class c "
             "JOIN pg_namespace n ON n.oid = c.relnamespace "
             "LEFT JOIN pg_attribute a ON a.attrelid = c.oid "
