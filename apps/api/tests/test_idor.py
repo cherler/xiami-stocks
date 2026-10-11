@@ -329,6 +329,9 @@ PER_USER = {
     # 不是关于公司的事实。decision_cards 自带 user_id 并挂了行级安全，
     # decision_transitions 按 company_id 回溯到 companies —— 各看各的。
     "/api/v1/decision-loop",
+    # 应对报告摘要先按公司所属账户过滤，再读取持仓与研究；不会返回别人的公司。
+    # test_response_report.py 同时验证跨账户读取返回空列表，以及批量上限。
+    "/api/v1/response-reports",
     # 助理仅返回当前用户的股票、核验、研究和提醒记录；公司入口先校验所属数据域。
     "/api/v1/assistant/my-stocks", "/api/v1/assistant/resolve",
     "/api/v1/assistant/check/", "/api/v1/assistant/research/", "/api/v1/assistant/status",
