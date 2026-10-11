@@ -7,11 +7,12 @@ Wants=network-online.target
 Type=simple
 User=xiamimate
 Group=xiamimate
-WorkingDirectory=/srv/xiamimate/xiamimate-stock-lab
-EnvironmentFile=/srv/xiamimate/xiamimate-stock-lab/.env
-Environment=PYTHONPATH=/srv/xiamimate/xiamimate-stock-lab/apps/api
+WorkingDirectory=/srv/xiami-stocks/app
+EnvironmentFile=/srv/xiami-stocks/app/.env
+Environment=PYTHONPATH=/srv/xiami-stocks/app/apps/api
+Environment=STOCK_CLOUD_LOCK=/srv/xiami-stocks/data/assistant-cloud.lock
 Environment="PGOPTIONS=-c statement_timeout=15000 -c lock_timeout=5000"
-ExecStart=/srv/xiamimate/xiamimate-stock-lab/.venv/bin/python -m stock_decision.assistant_cloud_worker
+ExecStart=/srv/xiami-stocks/app/.venv/bin/python -m stock_decision.assistant_cloud_worker
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
@@ -24,7 +25,7 @@ LimitNOFILE=1024
 OOMScoreAdjust=500
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/xiamimate/stocks-data
+ReadWritePaths=/srv/xiami-stocks/data
 PrivateTmp=true
 PrivateDevices=true
 NoNewPrivileges=true
