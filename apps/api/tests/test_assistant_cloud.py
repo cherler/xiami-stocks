@@ -101,6 +101,19 @@ def test_budget_atomic_and_failure_cannot_refund(monkeypatch):
         cloud.reserve_tokens(100)
 
 
+def test_billing_refusal_returns_shared_budget_without_calling_again(monkeypatch):
+    def deny(*a,**kw):
+        raise llm.CreditsError('余额不足')
+    monkeypatch.setattr(llm,'call_tools',deny)
+    with cloud.scope('alice'):
+        cloud.enqueue(message())
+    cloud.run(cloud.claim())
+    with cloud.scope('alice'):
+        assert web.history()[0]['error']=='余额不足'
+        with connection() as conn:
+            assert conn.execute("SELECT tokens FROM assistant_cloud_budget WHERE user_id='alice'").fetchone()['tokens']==0
+
+
 @pytest.mark.parametrize('failure',[401,503,'network'])
 def test_cloud_billing_fails_closed(monkeypatch,failure):
     monkeypatch.setattr(llm,'load_env',lambda:{'XM_API_BASE':'https://billing','XM_INTERNAL_KEY':'key','XM_OWNER_USER_ID':'owner'})

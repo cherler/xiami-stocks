@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import assistant, assistant_agent, assistant_cloud as cloud, assistant_cloud_feishu as feishu, pgbackend
 from .database import connection, is_postgres, now_iso
@@ -57,7 +58,7 @@ def watches():
             JOIN companies c ON c.id=s.company_id AND c.user_id=s.user_id WHERE s.enabled=1
             AND s.user_id IN (SELECT user_id FROM assistant_cloud_jobs) LIMIT 500""").fetchall()]
     # Fetch once per symbol, not once per subscriber. Research reads use the cache.
-    if symbols and assistant.is_trading_time():
+    if symbols and assistant.is_trading_time(datetime.now(ZoneInfo('Asia/Shanghai'))):
         try:
             with cloud.scope(None):
                 repository.store_market_quotes(repository._fetch_market_quotes(symbols))

@@ -346,7 +346,7 @@ def _execute(conn, e: Envelope, company: dict | None, action_id: str) -> dict:
                          (_scope(), company["id"], c.kind, direction))
         row = conn.execute("SELECT id FROM assistant_subscriptions WHERE user_id = ? AND company_id = ? AND kind = ? AND direction = ?",
                            (_scope(), company["id"], c.kind, direction)).fetchone()
-        return {"message": "跟踪条件已保存。" + ("自动检查已开启。" if assistant.watch_enabled() else "自动检查尚未开启。"),
+        return {"message": "跟踪条件已保存。" + ("自动检查已开启。" if assistant.watch_enabled() or os.getenv('STOCK_ASSISTANT_WEB_MODE') == 'cloud' else "自动检查尚未开启。"),
                 "subscription_id": row["id"], "company": company, "kind": c.kind,
                 "threshold": c.threshold, "direction": direction,
                 "previous": dict(before) if before else None}

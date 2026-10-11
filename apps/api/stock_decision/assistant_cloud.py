@@ -245,8 +245,13 @@ def converse(job):
             break
         reserved = len(encoded.encode()) + len(json.dumps(tools()).encode()) + len(SYSTEM.encode()) + 1600
         day = reserve_tokens(reserved)
-        response = llm.call_tools(SYSTEM,messages,tools(),task='stocks.assistant.cloud',max_tokens=1600,
-                                  timeout=max(1,min(40,int(deadline-time.monotonic()))))
+        try:
+            response = llm.call_tools(SYSTEM,messages,tools(),task='stocks.assistant.cloud',max_tokens=1600,
+                                      timeout=max(1,min(40,int(deadline-time.monotonic()))))
+        except llm.CreditsError:
+            # Refused before model execution: cannot exhaust the shared cap.
+            settle_tokens(day,reserved,0)
+            raise
         completion = response['completion']
         settle_tokens(day,reserved,completion.tokens or reserved)
         content = response['content']

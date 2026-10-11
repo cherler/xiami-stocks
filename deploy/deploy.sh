@@ -108,6 +108,8 @@ if [ "$cloud_mode" = "1" ]; then
     systemctl restart xiamimate-stock-assistant
     sleep 3
     systemctl is-active xiamimate-stock-assistant
+elif systemctl is-active --quiet xiamimate-stock-assistant; then
+    systemctl stop xiamimate-stock-assistant
 fi
 
 # 从入口验,不是从后端端口验 —— 路径分流那一层出错时后端是好的,用户看到的却是白页。
