@@ -43,9 +43,9 @@ npm run dev:web
 
 ## 可选：飞书研究助理
 
-线上右上角“问助手”提供接入指引。实际聊天由用户在自己的电脑运行，按 [apps/assistant/README.md](apps/assistant/README.md) 安装并连接自己的模型与飞书。已有本地飞书绑定无需重绑。
+线上右上角“问助手”支持云端聊天；登录后可以扫码创建自己的飞书机器人，回到网页确认，再去飞书继续聊。云端使用有限的共享任务池，账户、聊天和研究资料分别隔离。使用受积分余额、并发和每日用量限制。
 
-本地网页与该电脑的飞书助手共用研究资料；线上网站与本地数据库不自动同步。共享网站部署设置 `STOCK_ASSISTANT_WEB_MODE=guide`，只显示指引，不向其他用户开放站主的私人助手。
+也可以按 [apps/assistant/README.md](apps/assistant/README.md) 在自己的电脑运行 nanobot 助手。已有本地飞书绑定无需重绑；线上与本地数据库不自动同步。部署者选择 `STOCK_ASSISTANT_WEB_MODE=cloud` 启用云端服务，`guide` 仅显示自建指引，`local` 使用本机私人助手。云端部署还需要独立 worker、加密密钥和有效的 PostgreSQL 行级隔离。
 
 默认读取兄弟目录 `earth-atlas/research`，也可通过 `STOCK_RESEARCH_DIR` 指定自己的研究目录。仓库不包含个人研究文件、账户凭据或持仓数据库。本机助理依赖电脑与 API 持续运行。
 
