@@ -34,6 +34,9 @@ def request_connection():
             return
         if old and old['updated_at'] > (datetime.now()-timedelta(minutes=2)).isoformat():
             raise HTTPException(429, '请稍等两分钟再重新连接。')
+        pending=conn.execute("SELECT COUNT(*) AS n FROM assistant_cloud_accounts WHERE state IN ('requested','registering')").fetchone()['n']
+        if pending >= 2:
+            raise HTTPException(429, '目前有其他用户正在扫码，请稍后再连接；网页聊天可照常使用。')
         count=conn.execute("SELECT COUNT(*) AS n FROM assistant_cloud_accounts WHERE state NOT IN ('failed','disconnected')").fetchone()['n']
         if count >= cloud.limit('CONNECTIONS',128):
             raise HTTPException(429, '飞书连接数量已到服务容量上限，请先使用网页助手。')
@@ -60,18 +63,33 @@ def disconnect():
     return cloud.status()
 
 
-def register(user, request_id):
+async def register(user, request_id):
     import lark_oapi as lark
     with cloud.scope(user):
         def qr(info):
             with connection() as conn:
                 conn.execute("UPDATE assistant_cloud_accounts SET qr_url=?,expires_at=?,updated_at=? WHERE user_id=? AND state='registering' AND request_id=?",
-                    (info['url'],(datetime.now()+timedelta(seconds=info['expire_in'])).isoformat(),now_iso(),user,request_id))
-        try:
-            result=lark.register_app(on_qr_code=qr,source='xiami-stocks',create_only=True,
+                    (info['url'],(datetime.now()+timedelta(seconds=min(180,info['expire_in']))).isoformat(),now_iso(),user,request_id))
+        async def exchange():
+            task=asyncio.create_task(lark.aregister_app(on_qr_code=qr,source='xiami-stocks',create_only=True,
                 app_preset={'name':'虾米看股助手','desc':'查股票、记想法、盯变化、核对计划'},
                 addons={'preset':False,'scopes':{'tenant':['im:message:send_as_bot','im:message.p2p_msg:readonly']},
-                        'events':{'items':{'tenant':['im.message.receive_v1']}}})
+                        'events':{'items':{'tenant':['im.message.receive_v1']}}}))
+            try:
+                while True:
+                    done,_=await asyncio.wait({task},timeout=2)
+                    if done:
+                        return await task
+                    with connection() as conn:
+                        row=conn.execute("SELECT state,request_id FROM assistant_cloud_accounts WHERE user_id=?",(user,)).fetchone()
+                    if not row or row['state']!='registering' or row['request_id']!=request_id:
+                        raise ValueError('Registration cancelled')
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task,return_exceptions=True)
+        try:
+            result=await asyncio.wait_for(exchange(),180)
             sender=(result.get('user_info') or {}).get('open_id')
             brand=(result.get('user_info') or {}).get('tenant_brand')
             if not sender or brand not in {None,'feishu'}:

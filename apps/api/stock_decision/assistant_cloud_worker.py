@@ -42,7 +42,7 @@ async def registrations():
         try:
             user=await asyncio.to_thread(registration_claim)
             if user:
-                await asyncio.to_thread(feishu.register,*user)
+                await feishu.register(*user)
             else:
                 await asyncio.sleep(3)
         except Exception:

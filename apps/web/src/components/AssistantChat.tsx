@@ -37,12 +37,12 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
   const busy = sending || messages.some(m => m.state === "running" || m.state === "queued");
 
   useEffect(() => {
-    if (!isCloud) return;
+    if (!isCloud || (!guide && status?.ready)) return;
     const timer = window.setInterval(() => {
       void getAssistantWebStatus().then(setStatus).catch(() => {});
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [isCloud]);
+  }, [isCloud, guide, status?.ready]);
 
   const refresh = useCallback(async () => {
     const rows = await getAssistantMessages();
@@ -50,16 +50,19 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
     if (seen.current && [...done].some(id => !seen.current!.has(id))) changed.current();
     seen.current = done;
     setMessages(rows);
+    return rows;
   }, []);
 
   useEffect(() => {
     let active = true;
     let timer: number;
     const load = async () => {
+      let delay = 15000;
       try {
-        await refresh();
+        const rows = await refresh();
+        if (rows.some(m => m.state === "running" || m.state === "queued")) delay = 2500;
       } catch (e) { if (active) setError(errorMessage(e)); }
-      if (active) timer = window.setTimeout(load, 2500);
+      if (active) timer = window.setTimeout(load, delay);
     };
     void getAssistantWebStatus().then(s => {
       if (!active) return;
@@ -202,7 +205,7 @@ export default function AssistantChat({ companyId, onClose, onOpenCompany, onCha
             {status.feishu?.error && <p role="status">{status.feishu.error}</p>}
             {status.feishu?.qr_url && <div className="sa-qr">
               <img width="200" height="200" alt="使用飞书扫码连接看股助手" src={apiUrl(`/api/v1/assistant/cloud/feishu/qr?v=${encodeURIComponent(status.feishu.expires_at || "")}`)}/>
-              <p>用自己的飞书扫码，完成应用创建后回到这里。</p>
+              <p>请在 3 分钟内用自己的飞书扫码，完成应用创建后回到这里。</p>
               <a href={status.feishu.qr_url} target="_blank" rel="noreferrer">在手机上打开连接页面</a>
             </div>}
             {status.feishu?.state === "awaiting_confirmation" && <div>

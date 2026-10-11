@@ -183,16 +183,16 @@ def test_registration_encrypts_and_stale_completion_cannot_replace_new_request(m
     import lark_oapi as lark
     from cryptography.fernet import Fernet
     monkeypatch.setenv('STOCK_CLOUD_ENCRYPTION_KEY',Fernet.generate_key().decode())
-    def register(**kwargs):
+    async def register(**kwargs):
         kwargs['on_qr_code']({'url':'https://accounts.feishu.cn/example','expire_in':60})
         return {'client_id':'cli_new','client_secret':'private-secret','user_info':{'open_id':'ou_new','tenant_brand':'feishu'}}
-    monkeypatch.setattr(lark,'register_app',register)
+    monkeypatch.setattr(lark,'aregister_app',register)
     with cloud.scope('alice'),connection() as conn:
         conn.execute("INSERT INTO assistant_cloud_accounts(user_id,state,request_id,updated_at) VALUES ('alice','registering','new',?)",(now_iso(),))
-    feishu.register('alice','old')
+    asyncio.run(feishu.register('alice','old'))
     with cloud.scope('alice'),connection() as conn:
         assert conn.execute("SELECT state FROM assistant_cloud_accounts WHERE user_id='alice'").fetchone()['state']=='registering'
-    feishu.register('alice','new')
+    asyncio.run(feishu.register('alice','new'))
     with cloud.scope('alice'),connection() as conn:
         row=conn.execute("SELECT * FROM assistant_cloud_accounts WHERE user_id='alice'").fetchone()
         assert row['state']=='awaiting_confirmation'
@@ -232,3 +232,40 @@ def test_transport_multiplexes_clients_without_cross_routing(monkeypatch):
         assert not pool.clients
     asyncio.run(exercise())
     assert captured==[('cli_alice','wss://example/cli_alice'),('cli_bob','wss://example/cli_bob')]
+
+
+def test_registration_slots_are_bounded_and_cancel_releases_slot():
+    for user in ('alice','bob'):
+        with cloud.scope(user):
+            feishu.request_connection()
+    with cloud.scope('carol'),pytest.raises(HTTPException) as exc:
+        feishu.request_connection()
+    assert exc.value.status_code==429
+    with cloud.scope('alice'):
+        feishu.disconnect()
+    with cloud.scope('carol'):
+        feishu.request_connection()
+        assert cloud.status()['feishu']['state']=='requested'
+
+
+def test_disconnect_cancels_pending_device_flow(monkeypatch):
+    import lark_oapi as lark
+    cancelled=[]
+    async def pending(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+    monkeypatch.setattr(lark,'aregister_app',pending)
+    with cloud.scope('alice'),connection() as conn:
+        conn.execute("INSERT INTO assistant_cloud_accounts(user_id,state,request_id,updated_at) VALUES ('alice','registering','request',?)",(now_iso(),))
+    async def exercise():
+        task=asyncio.create_task(feishu.register('alice','request'))
+        await asyncio.sleep(0.01)
+        with cloud.scope('alice'):
+            feishu.disconnect()
+        await asyncio.wait_for(task,4)
+    asyncio.run(exercise())
+    assert cancelled==[True]
+    with cloud.scope('alice'):
+        assert cloud.status()['feishu']['state']=='disconnected'
