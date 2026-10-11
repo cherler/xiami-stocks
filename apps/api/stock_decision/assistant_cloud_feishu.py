@@ -168,7 +168,39 @@ class Connections:
         transport.requests=SimpleNamespace(post=lambda *a,**kw: requests.post(*a,timeout=10,**kw))
         transport.loop=asyncio.get_running_loop()
         class MultiplexClient(lark.ws.Client):
+            def __init__(self,*args,**kwargs):
+                super().__init__(*args,**kwargs)
+                self.background=set()
+                self.retired=False
+
+            async def _receive_message_loop(self):
+                task=asyncio.current_task()
+                self.background.add(task)
+                try:
+                    await super()._receive_message_loop()
+                finally:
+                    self.background.discard(task)
+
+            async def _handle_message(self,msg):
+                task=asyncio.current_task()
+                self.background.add(task)
+                try:
+                    await super()._handle_message(msg)
+                finally:
+                    self.background.discard(task)
+
+            async def retire(self):
+                self.retired=True
+                self._auto_reconnect=False
+                pending=[*self.background,self._cache._cron]
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending,return_exceptions=True)
+                await self._disconnect()
+
             async def _connect(self):
+                if self.retired:
+                    raise RuntimeError('Transport retired')
                 if self._conn is not None:
                     return
                 url=await asyncio.to_thread(super()._get_conn_url)
@@ -177,11 +209,11 @@ class Connections:
         with cloud.scope(None),connection() as conn:
             rows=[dict(r) for r in conn.execute("SELECT user_id,app_id,credential FROM assistant_cloud_accounts WHERE state IN ('authorized','connected') LIMIT ?",(cloud.limit('CONNECTIONS',128),)).fetchall()]
         wanted={r['user_id']:r for r in rows}
+        self.errors={key:value for key,value in self.errors.items() if key.removeprefix('notice:') in wanted}
         for user,(client,ping,app) in list(self.clients.items()):
             if user not in wanted or wanted[user]['app_id'] != app:
-                client._auto_reconnect=False
                 ping.cancel()
-                await client._disconnect()
+                await client.retire()
                 del self.clients[user]
         for user,row in wanted.items():
             if user in self.clients or self.errors.get(user,0)>time.monotonic():
@@ -202,8 +234,7 @@ class Connections:
                 with cloud.scope(user),connection() as conn:
                     conn.execute("UPDATE assistant_cloud_accounts SET error='' WHERE user_id=?",(user,))
             except Exception:
-                client._auto_reconnect=False
-                await client._disconnect()
+                await client.retire()
                 self.errors[user]=time.monotonic()+60
                 with cloud.scope(user),connection() as conn:
                     conn.execute("UPDATE assistant_cloud_accounts SET error='飞书连接暂未就绪，正在重连。' WHERE user_id=?",(user,))

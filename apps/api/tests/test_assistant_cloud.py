@@ -209,10 +209,14 @@ def test_transport_multiplexes_clients_without_cross_routing(monkeypatch):
     async def connect(self):
         captured.append((self._app_id,self._get_conn_url()))
         self._conn=object()
+        asyncio.create_task(self._receive_message_loop())
+    async def receive(self):
+        await asyncio.Event().wait()
     async def disconnect(self):
         self._conn=None
     monkeypatch.setattr(lark.ws.Client,'_get_conn_url',lambda self:'wss://example/'+self._app_id)
     monkeypatch.setattr(lark.ws.Client,'_connect',connect)
+    monkeypatch.setattr(lark.ws.Client,'_receive_message_loop',receive)
     monkeypatch.setattr(lark.ws.Client,'_disconnect',disconnect)
     for user in ('alice','bob'):
         with cloud.scope(user),connection() as conn:
@@ -222,10 +226,14 @@ def test_transport_multiplexes_clients_without_cross_routing(monkeypatch):
         pool=feishu.Connections()
         await pool.sync()
         assert set(pool.clients)=={'alice','bob'}
+        retired=pool.clients['alice'][0]
+        await asyncio.sleep(0)
+        assert retired.background
         with cloud.scope('alice'):
             feishu.disconnect()
         await pool.sync()
         assert set(pool.clients)=={'bob'}
+        assert not retired.background and retired._cache._cron.cancelled()
         with cloud.scope('bob'):
             feishu.disconnect()
         await pool.sync()
