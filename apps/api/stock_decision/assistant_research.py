@@ -7,7 +7,7 @@ from . import repository as repo
 
 ResearchSection = Literal[
     "theses", "financials", "industry_metrics", "segments", "valuation",
-    "announcements", "announcement_text", "promises", "peers", "reports", "report",
+    "announcements", "announcement_text", "promises", "peers", "reports", "report", "response",
 ]
 
 
@@ -38,7 +38,13 @@ def read(company_id: int, section: ResearchSection, *, annual_only: bool = True,
                       "citations": row["citations"], "sources": row["sources"]}
         else:
             result = None
-    if result is None:
+    if section == "response":
+        from .response_report import read as response_read
+        result = response_read(company_id, remember=False)
+        if result:
+            # Same conclusions; chart points are for rendering, not model context.
+            result = {**result, "prices": {k: v for k, v in result["prices"].items() if k != "chart"}}
+    elif result is None:
         result = repo.company_tool_runner(company_id)(section, {
             "annual_only": annual_only, "limit": 12,
             "title_contains": keyword, "event_date": event_date,

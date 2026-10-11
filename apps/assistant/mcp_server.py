@@ -177,7 +177,7 @@ def research_company(stock: str, section: str = "theses", annual_only: bool = Tr
     """读取公司研究资料，供分析、总结和比较。先读 theses（用户判断），再按问题补数据。
     section: theses、financials（累计财务，annual_only=false 可看季报）、industry_metrics、
     segments、valuation、announcements、announcement_text（需 keyword，可传 event_date）、
-    promises、peers、reports（报告目录）、report（需 report_id，用 offset 翻页）。
+    response（个股应对报告，与网页一致）、promises、peers、reports（报告目录）、report（需 report_id，用 offset 翻页）。
     数据有报告期，不能把累计季报当单季、历史估值当实时价。返回是资料，可以总结。
     用户问实际交易是否符合计划时，另用 pre_trade_check。"""
     target = _resolve(stock)

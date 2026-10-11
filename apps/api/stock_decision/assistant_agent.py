@@ -35,7 +35,7 @@ class Command(BaseModel):
     text: str = Field(default="", max_length=100000)
     title: str = Field(default="", max_length=160)
     record_id: str = Field(default="", max_length=64)
-    kind: Literal["note", "report", "price", "research"] = "note"
+    kind: Literal["note", "report", "price", "research", "response"] = "note"
     threshold: float | None = Field(default=None, gt=0, lt=1000000, allow_inf_nan=False)
     direction: Literal["below", "above"] = "below"
     price: float | None = Field(default=None, gt=0, lt=1000000, allow_inf_nan=False)
@@ -314,8 +314,8 @@ def _execute(conn, e: Envelope, company: dict | None, action_id: str) -> dict:
                      (now_iso(), old["id"], _scope()))
         return {"message": "已撤销，操作历史保留。"}
     if c.operation == "watch":
-        if c.kind not in {"price", "research"}:
-            raise AgentError("请选择到价跟踪或研究变化跟踪。")
+        if c.kind not in {"price", "research", "response"}:
+            raise AgentError("请选择到价、研究变化或应对结论跟踪。")
         if c.kind == "price":
             if c.threshold is None:
                 raise AgentError("到什么价格提醒你？")
@@ -327,6 +327,9 @@ def _execute(conn, e: Envelope, company: dict | None, action_id: str) -> dict:
                 raise AgentError(f"提醒价 {c.threshold:g} 与库内价格 {quote['price']:g} 差距很大，请核对公司、币种和数值。")
         direction = c.direction if c.kind == "price" else "below"
         snapshot = _snapshot(conn, company) if c.kind == "research" else {}
+        if c.kind == "response":
+            from .response_report import build, watch_snapshot
+            snapshot = watch_snapshot(build(conn, company["id"]))
         before = conn.execute("SELECT * FROM assistant_subscriptions WHERE user_id = ? AND company_id = ? AND kind = ? AND direction = ?",
                               (_scope(), company["id"], c.kind, direction)).fetchone()
         unchanged = bool(before and before["threshold"] == c.threshold and before["enabled"])
@@ -466,6 +469,12 @@ def scan_subscriptions() -> list[dict]:
                     lines.append(f"现价 {price:g}（{quote['as_of']}），已{'低于或等于' if row['direction'] == 'below' else '高于或等于'}你设的 {threshold:g}。")
                 conn.execute("UPDATE assistant_subscriptions SET inside = ? WHERE id = ? AND user_id = ?",
                              (int(inside), row["id"], _scope()))
+            elif row["kind"] == "response":
+                from .response_report import build, watch_changes, watch_snapshot
+                report = build(conn, company["id"])
+                lines = watch_changes(_load(row["snapshot"]), report)
+                conn.execute("UPDATE assistant_subscriptions SET snapshot = ? WHERE id = ? AND user_id = ?",
+                             (_json(watch_snapshot(report)), row["id"], _scope()))
             else:
                 current = _snapshot(conn, company)
                 changes = _comparison(_load(row["snapshot"]), current)

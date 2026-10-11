@@ -3358,6 +3358,35 @@ def get_assistant_research(
     return view
 
 
+@app.get("/api/v1/companies/{company_id}/response-report")
+def get_response_report(company_id: int) -> dict:
+    from .response_report import read
+    view = read(company_id)
+    if view is None:
+        raise not_found("company")
+    return view
+
+
+@app.get("/api/v1/response-reports")
+def get_response_summaries(company_ids: str = Query(max_length=220)) -> list[dict]:
+    from .response_report import summaries
+    ids = company_ids.split(",")
+    if not ids or len(ids) > 20 or any(not x.isdigit() or int(x) < 1 or int(x) > 2147483647 for x in ids):
+        raise HTTPException(status_code=422, detail="一次最多读取 20 家公司的报告。")
+    return summaries([int(x) for x in ids])
+
+
+@app.post("/api/v1/companies/{company_id}/response-watch")
+def set_response_watch(company_id: int, payload: dict) -> dict:
+    from .response_report import watch
+    if type(payload.get("enabled")) is not bool or set(payload) != {"enabled"}:
+        raise HTTPException(status_code=422, detail="请明确开启或暂停提醒。")
+    view = watch(company_id, payload["enabled"])
+    if view is None:
+        raise not_found("company")
+    return view
+
+
 @app.get("/api/v1/companies/{company_id}/decision-card")
 def get_decision_card(company_id: int) -> dict:
     """一家公司的决策卡：状态、守卫、能走去哪、为什么走不了、价格带、推进史。"""

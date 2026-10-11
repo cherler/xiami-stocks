@@ -139,9 +139,9 @@ function RunCard({ run, ceiling }: { run: SwingRun; ceiling: boolean }) {
   </article>;
 }
 
-export function SwingLab({ onOpenCompany }: { onOpenCompany: (id: number) => void }) {
+export function SwingLab({ onOpenCompany, initialCompanyId }: { onOpenCompany: (id: number) => void; initialCompanyId?: number }) {
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
-  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [companyId, setCompanyId] = useState<number | null>(initialCompanyId ?? null);
   const [window_, setWindow] = useState(250);
   const [trigger, setTrigger] = useState(1);
   const [baseShares, setBaseShares] = useState(10000);
@@ -181,7 +181,7 @@ export function SwingLab({ onOpenCompany }: { onOpenCompany: (id: number) => voi
   const realRuns = view?.runs.filter((run) => run.strategy !== "oracle") ?? [];
 
   return <>
-    <section className="page-intro archive-intro">
+    {initialCompanyId === undefined && <section className="page-intro archive-intro">
       <div>
         <span className="section-kicker">SWING</span>
         <h1>做 T，值不值</h1>
@@ -191,17 +191,17 @@ export function SwingLab({ onOpenCompany }: { onOpenCompany: (id: number) => voi
       </div>
       {view && <div className="local-stamp"><span>BARS</span>
         <strong>{view.bars_available.toLocaleString("zh-CN")} 根日线</strong></div>}
-    </section>
+    </section>}
 
     <section className="panel jd-panel">
       <div className="sw-controls">
-        <label>
+        {initialCompanyId === undefined && <>        <label>
           <span>股票</span>
-          <select value={companyId ?? ""} onChange={(event) => setCompanyId(Number(event.target.value))}>
+          <select disabled={initialCompanyId !== undefined} value={companyId ?? ""} onChange={(event) => setCompanyId(Number(event.target.value))}>
             {companies.map((company) =>
               <option key={company.id} value={company.id}>{company.name}（{company.symbol}）</option>)}
           </select>
-        </label>
+        </label></>}
         <label>
           <span>回看窗口</span>
           <select value={window_} onChange={(event) => setWindow(Number(event.target.value))}>

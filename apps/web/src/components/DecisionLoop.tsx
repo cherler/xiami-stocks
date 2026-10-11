@@ -1,15 +1,18 @@
 /** 跟踪首页只聚合已有资料；规则与状态变更仍由用户在详情中确认。 */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import {
   enrollDecisionCard, evaluateDecisionTriggers, getDecisionLoop,
   getDecisionCard, moveDecisionState, saveDecisionCard,
   type DecisionLoopView, type DecisionCardView,
   recordFill, deleteFill,
+  getResponseSummaries, type ResponseSummary,
 } from "../api";
 import { trackingRows, researchSummary } from "../lib/tracking";
+import { responseCompany } from "../lib/response";
 import "./DecisionLoop.css";
+import { StockResponseReport } from "./StockResponseReport";
 import { PanelTitle } from "./PanelTitle";
 
 function rich(text: string) {
@@ -516,11 +519,13 @@ function Card({ companyId, onBack, onOpenCompany, onOpenPortfolio }: {
   </>;
 }
 
-export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
+export function DecisionLoop({ onOpenCompany, onOpenPortfolio, renderReview }: {
+  renderReview: (id: number) => ReactNode;
   onOpenCompany: (id: number, tab?: string) => void;
   onOpenPortfolio: () => void;
 }) {
   const [board, setBoard] = useState<DecisionLoopView | null>(null);
+  const [reportId, setReportId] = useState<number | null>(() => responseCompany(window.location.search));
   const [error, setError] = useState("");
   const [open, setOpen] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -529,6 +534,37 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
   const [query, setQuery] = useState("");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [limit, setLimit] = useState(12);
+  const [responses, setResponses] = useState<Record<number, ResponseSummary>>({});
+  function openReport(id: number | null) {
+    const url = new URL(window.location.href);
+    if (id === null) url.searchParams.delete("report");
+    else url.searchParams.set("report", String(id));
+    window.history.pushState({}, "", url);
+    setReportId(id);
+    window.scrollTo({ top: 0 });
+  }
+  useEffect(() => {
+    const restore = () => { setReportId(responseCompany(window.location.search)); setOpen(null); };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
+  const reportIds = board && reportId === null ? trackingRows(board).filter(row => (!attentionOnly || row.actionable || responses[row.company_id]?.needs_attention)
+    && `${row.name} ${row.symbol}`.toLowerCase().includes(query.trim().toLowerCase()))
+    .slice(0, limit).map(row => row.company_id).join(",") : "";
+  useEffect(() => {
+    let live = true;
+    if (!reportIds) return;
+    const ids = reportIds.split(",").map(Number);
+    async function readSummaries() {
+      for (let offset = 0; offset < ids.length; offset += 20) {
+        const batch = await getResponseSummaries(ids.slice(offset, offset + 20));
+        if (!live) return;
+        setResponses(current => ({ ...current, ...Object.fromEntries(batch.map(row => [row.company_id, row])) }));
+      }
+    }
+    void readSummaries().catch(() => { /* Existing research remains usable; report detail offers retry. */ });
+    return () => { live = false; };
+  }, [reportIds, readAt]);
 
   const load = useCallback(async () => {
     try {
@@ -567,13 +603,18 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
     return <Card companyId={open} onBack={() => { setOpen(null); void load(); }}
                  onOpenCompany={onOpenCompany} onOpenPortfolio={onOpenPortfolio} />;
   }
+  if (reportId !== null) return <StockResponseReport key={reportId} companyId={reportId}
+    onBack={() => { openReport(null); void load(); }} onOpenCompany={onOpenCompany}
+    onOpenPlan={() => void startTracking(reportId)} renderReview={renderReview} />;
   if (!board) return <div className="dl-tracking-message" role={error ? "alert" : "status"}>
     <p>{error || "正在读取你的研究…"}</p>
     {error && <button type="button" className="text-button" disabled={busy}
       onClick={() => void refresh()}>重新读取</button>}
   </div>;
 
-  const rows = trackingRows(board);
+  const rows = trackingRows(board).map(row => ({ ...row,
+    actionable: row.actionable || Boolean(responses[row.company_id]?.needs_attention),
+  })).sort((a, b) => Number(b.actionable) - Number(a.actionable));
   const attention = rows.filter((row) => row.actionable).length;
   const waiting = rows.some((row) => row.card?.state === "waiting");
   const matches = rows.filter((row) => (!attentionOnly || row.actionable)
@@ -586,9 +627,9 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
     <header className="dl-tracking-header">
       <div>
         <h1>我的跟踪</h1>
-        <p>{attention > 0 ? `${attention} 家有待关注的变化，已排在前面。`
-          : board.total > 0 ? "当前没有待处理记录，接着看你的研究。"
-          : rows.length > 0 ? "已有资料都在这里，挑一家接着看。" : "从一家你关心的公司开始。"}</p>
+        <p>{attention > 0 ? `已发现 ${attention} 家有待关注的变化，已排在前面。`
+          : board.total > 0 ? "先看应对结论，需要深挖时再打开报告。"
+          : rows.length > 0 ? "挑一家公司，看当前应对、变化和下一步条件。" : "从一家你关心的公司开始。"}</p>
       </div>
       <div className="dl-tracking-tools">
         {waiting && <button type="button" className="text-button" disabled={busy}
@@ -617,19 +658,20 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
       <ul className="dl-tracking-list">
         {matches.slice(0, limit).map((row) => {
           const card = row.card;
-          const note = row.actionable && card ? card.entered_reason || card.watch_reason
-            : row.latest_claim || row.report_title || card?.watch_reason;
-          const stateLabel = card?.state === "triggered" ? "价格进入设定区间"
+          const response = responses[row.company_id];
+          const note = response?.reason || (row.actionable && card ? card.entered_reason || card.watch_reason
+            : row.latest_claim || row.report_title || card?.watch_reason);
+          const stateLabel = response?.action || (card?.state === "triggered" ? "价格进入设定区间"
             : card?.state === "discovered" && (row.thesis_count + row.valuation_count + row.report_count > 0)
-              ? "已有研究" : card?.state_label;
+              ? "已有研究" : card?.state_label);
           return <li key={row.company_id} className={row.actionable ? "dl-tracking-row is-attention" : "dl-tracking-row"}>
             <div className="dl-tracking-company">
-              <button type="button" onClick={() => onOpenCompany(row.company_id)}>{row.name}</button>
+              <button type="button" onClick={() => openReport(row.company_id)}>{row.name}</button>
               <span>{row.symbol}{row.is_sample ? " · 示例" : row.industry ? ` · ${row.industry}` : ""}</span>
             </div>
             <div className="dl-tracking-context">
               <div className="dl-tracking-state">
-                {card && <strong>{stateLabel}</strong>}
+                {stateLabel && <strong>{stateLabel}</strong>}
                 {card?.ideal_low != null && card?.ideal_high != null && <span>
                   理想区 {MONEY(card.ideal_low)}–{MONEY(card.ideal_high)}</span>}
                 <span>{researchSummary(row)}</span>
@@ -644,10 +686,7 @@ export function DecisionLoop({ onOpenCompany, onOpenPortfolio }: {
             <div className="dl-tracking-actions">
               <button type="button" className="text-button" onClick={() => onOpenCompany(row.company_id,
                 row.latest_claim ? "research" : row.report_count > 0 ? "chain" : row.valuation_count > 0 ? "market" : undefined)}>查看研究</button>
-              {card ? <button type="button" className="text-button" onClick={() => setOpen(row.company_id)}>
-                {row.actionable ? "查看变化" : "查看计划"}</button>
-                : <button type="button" className="text-button" disabled={busy}
-                    onClick={() => void startTracking(row.company_id)}>设置计划</button>}
+              <button type="button" className="text-button" onClick={() => openReport(row.company_id)}>应对报告</button>
             </div>
           </li>;
         })}

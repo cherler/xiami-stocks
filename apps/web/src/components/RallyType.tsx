@@ -37,9 +37,9 @@ const num = (value: number | null | undefined, digits = 2) =>
 const yi = (value: number | null | undefined) =>
   value === null || value === undefined ? "—" : `${(value / 1e8).toFixed(0)} 亿`;
 
-export function RallyType({ onOpenCompany }: { onOpenCompany: (id: number) => void }) {
+export function RallyType({ onOpenCompany, initialCompanyId }: { onOpenCompany: (id: number) => void; initialCompanyId?: number }) {
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
-  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [companyId, setCompanyId] = useState<number | null>(initialCompanyId ?? null);
   // **直接输代码那一路是刻意排在前面的。**
   // 使用者最想问的那几只（「那只很烂的股票凭什么连着涨停」）按定义就不在
   // 研究池里——他要是研究过它们，也就不会看不懂了。
@@ -90,7 +90,7 @@ export function RallyType({ onOpenCompany }: { onOpenCompany: (id: number) => vo
     && verdict.primary !== "unexplained" && verdict.primary !== "quiet";
 
   return <>
-    <section className="page-intro archive-intro">
+    {initialCompanyId === undefined && <section className="page-intro archive-intro">
       <div>
         <span className="section-kicker">WHY</span>
         <h1>它为什么涨（或者跌）</h1>
@@ -101,25 +101,25 @@ export function RallyType({ onOpenCompany }: { onOpenCompany: (id: number) => vo
         <strong>{facts.change === null || facts.change === undefined ? "—"
           : `${facts.change > 0 ? "+" : ""}${facts.change.toFixed(1)}%`}</strong>
         <em>{facts.start_date} → {facts.end_date}</em></div>}
-    </section>
+    </section>}
 
     <section className="panel jd-panel">
       <div className="sw-controls">
-        <label>
+        {initialCompanyId === undefined && <>        <label>
           <span>直接输代码（不必在研究池里）</span>
-          <input type="text" inputMode="numeric" maxLength={6} placeholder="六位数字，如 600127"
+          <input disabled={initialCompanyId !== undefined} type="text" inputMode="numeric" maxLength={6} placeholder="六位数字，如 600127"
                  value={symbol}
                  onChange={(event) => setSymbol(event.target.value.replace(/\D/g, ""))} />
         </label>
         <label>
           <span>或从研究池里挑</span>
-          <select value={symbol.trim() ? "" : (companyId ?? "")}
+          <select disabled={initialCompanyId !== undefined} value={symbol.trim() ? "" : (companyId ?? "")}
                   onChange={(event) => { setSymbol(""); setCompanyId(Number(event.target.value)); }}>
             {symbol.trim() && <option value="">（正在看 {symbol}）</option>}
             {companies.map((company) =>
               <option key={company.id} value={company.id}>{company.name}（{company.symbol}）</option>)}
           </select>
-        </label>
+        </label></>}
         <label>
           <span>窗口</span>
           <select value={window_} onChange={(event) => setWindow(Number(event.target.value))}>

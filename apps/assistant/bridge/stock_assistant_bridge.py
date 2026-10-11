@@ -26,7 +26,7 @@ class StockAssistantTool(Tool):
     description = (
         "虾米看股个人助理：context 读取当前公司、原判断、记录、偏好和跟踪条件；"
         "remember 保存想法或报告；correct 追加修订(record_id=记录号)；undo 撤销记录；"
-        "watch 建立跟踪(kind=price/research，价格需threshold和direction)，pause_watch/resume_watch(record_id=跟踪号)；"
+        "watch 建立跟踪(kind=price/research/response（应对结论变化），价格需threshold和direction)，pause_watch/resume_watch(record_id=跟踪号)；"
         "compare 对比上次查阅后的财报公告；preferences 读写偏好；"
         "prepare_fill 提交成交草稿；confirm 在本人回复确认后登记；cancel 取消草稿。"
         "用户随便说话，由你理解并组合能力；模糊价格、数量不能猜。"
@@ -41,7 +41,7 @@ class StockAssistantTool(Tool):
             "text": {"type": "string", "description": "保存的正文、修订后完整正文、跟踪理由或偏好；保留用户原意。"},
             "title": {"type": "string"},
             "record_id": {"type": "string", "description": "工具回执里的记录号或跟踪号，不得编造"},
-            "kind": {"type": "string", "enum": ["note", "report", "price", "research"]},
+            "kind": {"type": "string", "enum": ["note", "report", "price", "research", "response"]},
             "threshold": {"type": "number", "description": "用户明确给出的提醒价，不能补零或改小数点"},
             "direction": {"type": "string", "enum": ["below", "above"]},
             "price": {"type": "number"}, "shares": {"type": "number"},

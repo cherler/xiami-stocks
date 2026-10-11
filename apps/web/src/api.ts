@@ -1811,6 +1811,30 @@ export function evaluateDecisionTriggers(): Promise<{
 export function getDecisionCard(companyId: number): Promise<DecisionCardView> {
   return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card`);
 }
+
+export type ResponseStrategy = {
+  key: string; label: string; return_pct: number; excess_pct: number; drawdown_pct: number;
+  trades: number; skipped_days: number; cost: number; better_blocks: number;
+  blocks: { from: string; to: string; excess_pct: number }[];
+};
+export type StockResponse = {
+  company: { id: number; name: string; symbol: string }; generated_at: string; horizon: string;
+  action: string; held_action: string; empty_action: string; position_note: string;
+  position: { shares: number; weight_percent: number | null; cost: number | null } | null;
+  regime_label: string; reasons: string[]; conditions: string[]; version: string;
+  previous_action: string | null; previous_at: string | null; change_note: string; watching: boolean; watch_running: boolean;
+  plan_note: string; band_note: string;
+  thesis: { id: number; claim: string; status: string; counter_condition: string } | null;
+  reviews: { thesis_id: number; claim: string; reasons: string[] }[];
+  prices: { ready: boolean; note: string; as_of?: string; chart: { date: string; close: number; ma60: number | null }[];
+    ma20?: number; ma60?: number; return20?: number; drawdown60?: number; volatility?: number;
+    strategies: ResponseStrategy[]; comparison_note?: string; comparison_from?: string; comparison_to?: string };
+};
+export const getStockResponse = (id: number) => apiFetch<StockResponse>(`/api/v1/companies/${id}/response-report`);
+export type ResponseSummary = { company_id: number; action: string; reason: string; as_of: string | null; needs_attention: boolean };
+export const getResponseSummaries = (ids: number[]) => apiFetch<ResponseSummary[]>(`/api/v1/response-reports?company_ids=${ids.join(",")}`);
+export const setResponseWatch = (id: number, enabled: boolean) =>
+  apiFetch<{ watching: boolean }>(`/api/v1/companies/${id}/response-watch`, { method: "POST", body: JSON.stringify({ enabled }) });
 export function enrollDecisionCard(companyId: number): Promise<DecisionCardView> {
   return apiFetch<DecisionCardView>(`/api/v1/companies/${companyId}/decision-card/enroll`,
     { method: "POST" });

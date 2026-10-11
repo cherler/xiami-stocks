@@ -1,3 +1,4 @@
+import { responseCompany } from "./lib/response";
 import { apiUrl, ROUTE_BASE } from "./config";
 import { formatDateTime } from "./lib/datetime";
 import { errorMessage } from "./lib/errormessage";
@@ -17,7 +18,6 @@ import {
   FileText,
   ChevronRight,
   CircleGauge,
-  ClipboardCheck,
   Database,
   HardDriveDownload,
   Map as MapIcon,
@@ -40,8 +40,6 @@ import {
   X,
   ChevronDown,
   Workflow,
-  Compass,
-  Repeat2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -461,12 +459,6 @@ const navGroups: NavGroup[] = [
       // 决策闭环就是那一段，所以它是这一组的第一项。
       { id: "loop", label: "我的跟踪", icon: Workflow, available: true },
       { id: "portfolio", label: "持仓账本", icon: Wallet, available: true },
-      // 涨跌归因跟做 T 回测都是**给判断当参照的算术**：一个回答"它为什么涨"，
-      // 一个回答"波动到底能不能吃到"。放在账本之后、复核之前——
-      // 它们服务的是"我要不要改主意"，而不是"我记了什么"。
-      { id: "rally", label: "涨跌归因", icon: Compass, available: true },
-      { id: "swing", label: "做 T 回测", icon: Repeat2, available: true },
-      { id: "reviews", label: "复核工作台", icon: ClipboardCheck, available: true },
     ],
   },
   {
@@ -482,7 +474,7 @@ const navGroups: NavGroup[] = [
 
 /** 当前页属于哪个分区。分区页签靠它决定显示哪一条。 */
 function sectionOf(page: Page): NavGroup {
-  const key = page === "company" ? "companies" : page;
+  const key = page === "company" ? "companies" : ["rally", "swing", "reviews"].includes(page) ? "loop" : page;
   return navGroups.find((group) => group.items.some((item) => item.id === key)) ?? navGroups[0];
 }
 
@@ -5359,7 +5351,7 @@ function InboxLearningPanel() {
   </section>;
 }
 
-function ReviewsPage({ onOpenCompany, onChanged }: { onOpenCompany: (id: number) => void; onChanged: () => Promise<void> }) {
+function ReviewsPage({ onOpenCompany, onChanged, onlyCompanyId }: { onOpenCompany: (id: number) => void; onChanged: () => Promise<void>; onlyCompanyId?: number }) {
   const [queue, setQueue] = useState<ReviewQueueItem[]>([]);
   const [allTheses, setAllTheses] = useState<ThesisListItem[]>([]);
   const [activeThesis, setActiveThesis] = useState<number | null>(null);
@@ -5370,8 +5362,8 @@ function ReviewsPage({ onOpenCompany, onChanged }: { onOpenCompany: (id: number)
 
   async function reload() {
     const [nextQueue, nextAll] = await Promise.all([getReviewQueue(), getAllTheses()]);
-    setQueue(nextQueue);
-    setAllTheses(nextAll);
+    setQueue(onlyCompanyId === undefined ? nextQueue : nextQueue.filter(item => item.company_id === onlyCompanyId));
+    setAllTheses(onlyCompanyId === undefined ? nextAll : nextAll.filter(item => item.company_id === onlyCompanyId));
   }
   useEffect(() => {
     let current = true;
@@ -7251,7 +7243,7 @@ function SectionTabs({ page, onNavigate }: {
   const isOwner = useIsOwner();
   const items = section.items.filter((item) => !item.ownerOnly || isOwner === true);
   if (items.length < 2) return null;
-  const key = page === "company" ? "companies" : page;
+  const key = page === "company" ? "companies" : ["rally", "swing", "reviews"].includes(page) ? "loop" : page;
   return (
     <nav className="section-tabs" role="tablist" aria-label={`${section.label}分区`}>
       {items.map((item) => (
@@ -7542,7 +7534,7 @@ export default function App() {
             （原注：Headline 当初就是把这条横幅和反方入口合并成一块放到第一屏的，
           再挂一条细横幅是同一件事说两遍。其余页面照旧跟着换页。 */}
         {<Suspense fallback={null}><CounterHitBanner onOpenCompany={openCompany} /></Suspense>}{page === "dashboard" && <DashboardPage dashboard={dashboard} onOpenCompany={openCompany} onCreate={openCreate} onStartJudgment={startFirstJudgment} onRefreshMarket={() => void syncMarket()} refreshing={marketRefreshing} marketError={marketError} onNavigate={navigate} />}{page === "review" && <ReviewPage dashboard={dashboard} onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "companies" && <CompaniesPage showCreate={showCreate} onOpenCompany={openCompany} onCloseCreate={() => setShowCreate((value) => !value)} onCreated={(company) => { void refreshDashboard(); openCompany(company.id); }} />}{page === "company" && selectedCompanyId !== null && <CompanyDetailPage assistantRevision={assistantRevision} companyId={selectedCompanyId} onBack={() => navigate("companies")} onArchiveChanged={refreshDashboard} />}{page === "portfolio" && <PortfolioPage onOpenCompany={openCompany} onLedgerChanged={refreshDashboard} />}{page === "reviews" && <ReviewsPage onOpenCompany={openCompany} onChanged={refreshDashboard} />}{page === "industries" && <IndustriesPage onOpenCompany={openCompany} />}{page === "screener" && <ScreenerPage onWrite={(symbol) => setWriting({ open: true, symbol })} />}{page === "heatmap" && <HeatmapPage onOpenCompany={openCompany} />}{page === "methods" && <MethodsPage onOpenCompany={openCompany} />}{page === "docs" && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">读文档</span><PanelTitle hint="每个结论都带页码，能翻回原文核。">年报、公告、研报，读进来问它</PanelTitle></div></div><Suspense fallback={<div className="empty-state">正在加载…</div>}><Documents /></Suspense></section>}
-      {page === "loop" && <Suspense fallback={<div className="empty-state page-loading">正在打开我的跟踪…</div>}><DecisionLoop key={assistantRevision} onOpenCompany={openCompany} onOpenPortfolio={() => navigate("portfolio")} /></Suspense>}
+      {page === "loop" && <Suspense fallback={<div className="empty-state page-loading">正在打开我的跟踪…</div>}><DecisionLoop key={assistantRevision} onOpenCompany={openCompany} onOpenPortfolio={() => navigate("portfolio")} renderReview={id => <ReviewsPage onlyCompanyId={id} onOpenCompany={openCompany} onChanged={refreshDashboard} />} /></Suspense>}
       {page === "swing" && <Suspense fallback={<div className="empty-state page-loading">正在打开做 T 回测…</div>}><SwingLab onOpenCompany={openCompany} /></Suspense>}
       {page === "rally" && <Suspense fallback={<div className="empty-state page-loading">正在打开涨跌归因…</div>}><RallyType onOpenCompany={openCompany} /></Suspense>}
       {page === "news" && <NewsPageView onOpenCompany={openCompany} />}
@@ -7555,7 +7547,7 @@ export default function App() {
         <QuickThesis symbol={writing.symbol} onClose={() => setWriting(null)}
                      onDone={(companyId) => { setWriting(null); void refreshDashboard(); openCompany(companyId); }} />
       </Suspense>
-    </div>}{assistantOpen && <Suspense fallback={null}><AssistantChat companyId={page === "company" ? selectedCompanyId : null} onClose={closeAssistant} onOpenCompany={id => {
+    </div>}{assistantOpen && <Suspense fallback={null}><AssistantChat companyId={page === "company" ? selectedCompanyId : page === "loop" ? responseCompany(window.location.search) : null} onClose={closeAssistant} onOpenCompany={id => {
         openCompany(id, "chain", "assistant-record");
         window.dispatchEvent(new PopStateEvent("popstate"));
         setAssistantRevision(v => v + 1);
